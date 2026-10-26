@@ -296,10 +296,10 @@ model names, and every other model remain unsupported by this distortion decoder
 numbers and table lengths do not establish the scale, interpolation or crop normalization on another
 body. Support can expand after independent geometry validation; do not add model-name prefix matching.
 
-The current `cargo xtask corpus --download` manifest contains 25 Sony CC0 samples across 18 bodies,
+The current `cargo xtask corpus --download` manifest contains 27 Sony CC0 samples across 19 bodies,
 including samples 4822 (A7R IVA / 24–105 mm) and 3989 (A9 II / 200–600 mm), each with a pinned SHA-256 that the
-download checks. `sony_embedded_distortion_is_limited_to_validated_models` checks 23 of them (the two ILCE-7CM2
-codings have their own test), and `sony_lens_records_of_the_public_samples` verifies all 25 against their pins
+download checks. `sony_embedded_distortion_is_limited_to_validated_models` checks 25 of them (the two ILCE-7CM2
+codings have their own test), and `sony_lens_records_of_the_public_samples` verifies all 27 against their pins
 (`SONY_SAMPLES` in `crates/raw/tests/it/corpus.rs`, itself anchored by a pinned digest and compared with the manifest)
 before decoding. **No CI job fetches the corpus**: these fixture tests run only where it has been downloaded, and
 otherwise skip each absent file. `LIGHTCRAFT_CORPUS_REQUIRED=1` makes `sony_lens_records_of_the_public_samples`
@@ -315,6 +315,7 @@ fail on any absent pinned file instead.
 | DSC-RX100 | One | Shading, from the `SR2SubIFD` (the raw IFD has no tables); CA and distortion in the 11-sample layout | None |
 | DSC-RX100M3 | One | Shading; CA and distortion in the 11-sample layout | None |
 | ILCE-7CR | Compressed, lossless L/M | All three; 272 / 1 / 0 | None |
+| ILCE-7RM5 | Compressed, full frame and S35 | Full frame: all three, 272 / 1 / 0; S35: settings only, its 11-sample tables are not interpreted | None |
 | ILCE-7RM4 | 14-bit compressed | All three; 257 / 1 / 17 | None |
 | ILCE-3500 | 5600 K | Settings only (unavailable) | None |
 | ILCE-7S | Shade | An all-zero CA table; settings unavailable | None |
@@ -342,7 +343,12 @@ conversion, the Auto / forced-Auto setting gate, the mode checks and the 0.25 px
 only entry is the ILCE-7CR. A body whose camera JPEGs fit this convention, at its own unit, is added there with its
 validation recorded on this page; one that fits the A7R IVA's convention joins `DISTORTION_MODELS` instead. A test
 keeps the two lists disjoint, so a photo never gets both. Bodies with a similar sensor, such as the ILCE-7RM5
-(61 MP, like the A7CR and the A7R IVA), stay uncorrected until they are measured.
+(61 MP, like the A7CR and the A7R IVA), stay uncorrected until they are measured. All nine public raw.pixls.us ILCE-7RM5
+samples (one FE 50mm F1.2 GM scene at 50 mm: five full-frame and four S35 codings) were shot with distortion Off,
+so their camera JPEGs keep the lens's distortion and cannot validate a conversion. Their full-frame crop is
+9504 × 6336 at (32, 20), as on the A7CR. Two are pinned (full-frame and S35 compressed) as the model-boundary check
+`ilce7rm5_lens_records_and_model_boundary`, which also changes the full-frame file's setting to Auto and checks
+that it still gets no warp. Enabling the body needs correction-on photos across several lenses and focal lengths.
 
 Before enabling another body, compare corrected and uncorrected renders against independent references
 across multiple lenses/focal lengths and photographs with features near the edges and corners. Record

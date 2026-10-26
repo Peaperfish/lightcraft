@@ -930,6 +930,18 @@ const RAW_SAMPLES: &[(&str, &str, &str)] = &[
         "https://raw.pixls.us/data/Sony/ILCE-7CR/DSC00798.ARW",
         "f5096e8fbccf0842c8a57763cabd2836608f019eb7fd54f7b22260c2f5bc4da5",
     ),
+    // ILCE-7RM5 (61 MP, FE 50mm F1.2 GM, distortion correction Off): compressed ARW2, full frame and S35 (APS-C,
+    // 11-sample lens tables). The model boundary of `vendor::arw_lens`: no warp until the body is measured.
+    (
+        "arw-sony-a7rm5-compressed.arw",
+        "https://raw.pixls.us/data/Sony/ILCE-7RM5/7RM5-LossyCompressed.ARW",
+        "92d962578abe59f686ae57016e87d5f81e03f17404bd1959aa9628bd5a52ca91",
+    ),
+    (
+        "arw-sony-a7rm5-s35-compressed.arw",
+        "https://raw.pixls.us/data/Sony/ILCE-7RM5/7RM5-S35-LossyCompressed.ARW",
+        "aacaf9ad3f63c3e3b9fe2d3dd9759894e4f374254b7c1a081c26463936892c14",
+    ),
     // ILCE-7CM2 (33 MP, issue #697): lossless compressed L, and the compressed "M-size" coding, which is Bayer at
     // 4736×3132 with black 512 (only the lossless M/S codings are YCbCr with the 1024 pedestal)
     (

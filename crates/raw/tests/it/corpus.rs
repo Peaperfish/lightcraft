@@ -1081,6 +1081,8 @@ fn sony_embedded_distortion_is_limited_to_validated_models() {
         ("arw-sony-a7cr-lossless-l.arw", "ILCE-7CR", 0),
         ("arw-sony-a7cr-lossless-m.arw", "ILCE-7CR", 0),
         ("arw-sony-a7cr-compressed.arw", "ILCE-7CR", 0),
+        ("arw-sony-a7rm5-compressed.arw", "ILCE-7RM5", 0),
+        ("arw-sony-a7rm5-s35-compressed.arw", "ILCE-7RM5", 0),
         ("arw-sony-a7rm4-14bit-compressed.arw", "ILCE-7RM4", 0),
         ("arw-sony-a500.arw", "DSLR-A500", 0),
         ("arw-sony-a700.arw", "DSLR-A700", 0),
@@ -1155,6 +1157,8 @@ const SONY_SAMPLES: &[(&str, &str)] = &[
     ("arw-sony-a7cr-lossless-l.arw", "3e1642f3a1ae7c9f93228c5f09f27e362608e6a4ca1b3e5d8dd9eb8fae576997"),
     ("arw-sony-a7cr-lossless-m.arw", "5bcba4acc52a5b902074581b4a2f5fb3c79ec56bd0fdc1746b9e2c0f9d3e9c88"),
     ("arw-sony-a7cr-compressed.arw", "f5096e8fbccf0842c8a57763cabd2836608f019eb7fd54f7b22260c2f5bc4da5"),
+    ("arw-sony-a7rm5-compressed.arw", "92d962578abe59f686ae57016e87d5f81e03f17404bd1959aa9628bd5a52ca91"),
+    ("arw-sony-a7rm5-s35-compressed.arw", "aacaf9ad3f63c3e3b9fe2d3dd9759894e4f374254b7c1a081c26463936892c14"),
     ("arw-sony-a7cm2-lossless-l.arw", "342d893bd71fd050c273df181e3039d3f12d88947b0662de5de5325c84cc449b"),
     ("arw-sony-a7cm2-compressed-m.arw", "002c86d38a16b08a2438780728b4fda8efcc745fa6c26231dad6af67b383b11e"),
     ("arw-sony-a7rm4-14bit-compressed.arw", "e6dafe42643f69ab9d1fd00414b7a1f5104df354bb589201600ac934b29b5e4a"),
@@ -1173,8 +1177,8 @@ const SONY_SAMPLES: &[(&str, &str)] = &[
 
 /// SHA-256 of [`SONY_SAMPLES`] as `name  sha256` lines sorted by name: anchors the pins independently of the
 /// manifest, so editing both together (as a drift or a mistake) still fails `sony_pins_match_the_corpus_manifest`.
-/// All 25 pins were checked against the downloaded files when it was set.
-const SONY_PINS_SHA256: &str = "4cfc349194278146356b463c59ede500331c6ca5fc50aec4e92d7cd847b17b68";
+/// All 27 pins were checked against the downloaded files when it was set.
+const SONY_PINS_SHA256: &str = "2c96c165f7a49c2ec228a7887b67eb2d3bd5c49e0ee941688c3cfe0f7a36d180";
 
 /// A Sony corpus file's bytes, checked against its pinned SHA-256 before anything decodes them; `None` (with a
 /// note) when the file is absent, unless `LIGHTCRAFT_CORPUS_REQUIRED=1` asks for every pinned file. A file that
@@ -1363,6 +1367,73 @@ fn sony_lens_records_of_the_public_samples() {
         checked += 1;
     }
     eprintln!("Sony lens records: {checked} checks on corpus files");
+}
+
+/// The ILCE-7RM5 samples (FE 50mm F1.2 GM at 50 mm, distortion Off): the full-frame file's three 16-sample tables
+/// decode, equal to their `SR2SubIFD` copies, and the S35 file's 11-sample tables are refused; neither gets a warp.
+/// Neither does the full-frame file with its setting changed to Auto (17): the body is not validated, whatever its
+/// table (docs/sony-lens-corrections.md). Expected tables: what ExifTool 13.55, run as a black-box tool, prints.
+#[test]
+fn ilce7rm5_lens_records_and_model_boundary() {
+    use lightcraft_raw::Rect;
+    use lightcraft_raw::lens_metadata::{SonyCopy, SonyFieldError, SonyLensStatus, SonySource};
+    let root = corpus_root().join("raw");
+    let mut checked = 0;
+    if let Some(mut bytes) = pinned_sony(&root, "arw-sony-a7rm5-compressed.arw") {
+        let full = decode(&bytes).unwrap();
+        assert_eq!(probe_info(&bytes).unwrap(), full.info());
+        let s = full.lens_metadata.sony.as_ref().unwrap();
+        let settings = [s.shading.setting.value, s.chromatic_aberration.setting.value, s.distortion.setting.value].map(|v| v.map(|v| v.value));
+        assert_eq!(settings, [Some(272), Some(1), Some(0)]);
+        assert_eq!(s.shading.table.value, Some([0, 576, 1280, 2048, 2912, 3808, 4768, 5792, 6816, 7840, 8832, 9824, 10752, 11648, 12480, 13312]));
+        assert_eq!(
+            s.chromatic_aberration.table.value,
+            Some([
+                [0, 0, 0, 128, 128, 128, 128, 128, 256, 256, 256, 256, 256, 256, 256, 256],
+                [-256, -128, -128, 0, 0, 0, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128],
+            ])
+        );
+        assert_eq!(s.distortion.table.value, Some([3, 0, -5, -12, -22, -32, -46, -57, -69, -76, -79, -70, -48, -4, 62, 168]));
+        for t in [&s.shading.table.source, &s.chromatic_aberration.table.source, &s.distortion.table.source] {
+            assert_eq!(*t, Some(SonySource::RawIfd));
+        }
+        assert_eq!([s.shading.table.copies_agree, s.chromatic_aberration.table.copies_agree, s.distortion.table.copies_agree], [Some(true); 3]);
+        assert_eq!(s.distortion.status, SonyLensStatus::NotValidatedModel);
+        let g = &s.geometry;
+        assert_eq!((g.storage_width, g.storage_height, g.compression, g.linear_ycbcr, g.native_3_2), (9600, 6376, 32767, false, true));
+        assert_eq!((g.image_crop, g.reference), (Rect::new(32, 20, 9504, 6336), Rect::new(32, 20, 9504, 6336)));
+        assert!(full.opcodes.list3.is_empty());
+        // the camera setting does not validate the body
+        let tiff = lightcraft_tiff::Tiff::parse(&bytes).unwrap();
+        let at = tiff.find(0x7036).unwrap().offset as usize;
+        let mut auto = Vec::new();
+        tiff.order.put_u16(&mut auto, 17);
+        bytes[at..at + 2].copy_from_slice(&auto);
+        let header = probe_info(&bytes).unwrap();
+        let full = decode(&bytes).unwrap();
+        assert_eq!(header, full.info());
+        let s = full.lens_metadata.sony.as_ref().unwrap();
+        assert_eq!(s.distortion.setting.value.map(|v| v.value), Some(17));
+        assert_eq!(s.distortion.status, SonyLensStatus::NotValidatedModel);
+        assert!(full.opcodes.list3.is_empty(), "an unvalidated body gets no warp, even with correction on");
+        checked += 1;
+    }
+    if let Some(bytes) = pinned_sony(&root, "arw-sony-a7rm5-s35-compressed.arw") {
+        let full = decode(&bytes).unwrap();
+        assert_eq!(probe_info(&bytes).unwrap(), full.info());
+        let s = full.lens_metadata.sony.as_ref().unwrap();
+        let settings = [s.shading.setting.value, s.chromatic_aberration.setting.value, s.distortion.setting.value].map(|v| v.map(|v| v.value));
+        assert_eq!(settings, [Some(272), Some(1), Some(0)]);
+        let refused = |n| SonyCopy::Rejected(SonyFieldError::CountPrefix(n));
+        assert_eq!((s.shading.table.raw_ifd, s.shading.table.sr2), (refused(11), refused(11)));
+        assert_eq!((s.chromatic_aberration.table.raw_ifd, s.chromatic_aberration.table.sr2), (refused(22), refused(22)));
+        assert_eq!((s.distortion.table.raw_ifd, s.distortion.table.sr2), (refused(11), refused(11)));
+        assert_eq!(s.distortion.status, SonyLensStatus::NoTable);
+        assert_eq!(s.geometry.image_crop, Rect::new(16, 10, 6240, 4160));
+        assert!(full.opcodes.list3.is_empty());
+        checked += 1;
+    }
+    eprintln!("ILCE-7RM5 lens records: {checked} of 2 corpus files checked");
 }
 
 /// These pinned JPEGs have correction Off. Changing only the raw-IFD setting tests decoder wiring,
