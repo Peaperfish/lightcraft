@@ -1022,6 +1022,8 @@ impl RenderJob {
             Ok(source) => {
                 // the plain picture, or (Denoise amount above 0 and a denoised picture cached) the mix the amount asks for
                 let src = &source.image_for(self.settings.denoise_amount());
+                // (the result if the transparency can't follow the render, made before `self.info` moves)
+                let alpha_failed = self.request.alpha.then(|| self.failed("the transparency did not follow the render".into()));
                 let info = source.info_or(self.info);
                 // an export that keeps transparency develops the colour without the white the pixels
                 // were flattened onto, and carries the alpha through the same geometry (issue #2976)
@@ -1037,8 +1039,9 @@ impl RenderJob {
                 if straight.is_some() {
                     rendered.alpha = lightcraft_pipeline::render_alpha(src, &info, &self.settings, &self.request)
                         .filter(|a| (a.width, a.height) == (rendered.image.width, rendered.image.height));
-                    if rendered.alpha.is_none() {
-                        log::warn!("photo {}: the transparency did not follow the render; exported without it", self.photo.0);
+                    // (the colour is unflattened: without its alpha the file would be wrong at soft edges)
+                    if let (None, Some(failed)) = (&rendered.alpha, alpha_failed) {
+                        return failed;
                     }
                 }
                 // for a display profile: the image goes to the display's values, the histogram

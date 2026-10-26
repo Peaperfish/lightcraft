@@ -272,9 +272,9 @@ pub fn encode_tiff_associated(img: &EncodeImage, compression: TiffCompression, m
     write_tiff(&EncodeImage { samples, ..*img }, compression, meta, 1)
 }
 
-/// The TIFF writer of [`encode_tiff`]: `extra` is the `ExtraSamples` value of an alpha channel
-/// (1 associated, 2 unassociated). `img` is validated.
-fn write_tiff(img: &EncodeImage, compression: TiffCompression, meta: &EncodeMeta, extra: u16) -> Result<Vec<u8>> {
+/// The TIFF writer of [`encode_tiff`]: `extra_samples` is the `ExtraSamples` value of an alpha
+/// channel (1 associated, 2 unassociated). `img` is validated.
+fn write_tiff(img: &EncodeImage, compression: TiffCompression, meta: &EncodeMeta, extra_samples: u16) -> Result<Vec<u8>> {
     use tiff::encoder::{Compression, DeflateLevel, TiffEncoder, colortype};
     use tiff::tags::Predictor;
     let e = |e: tiff::TiffError| Error::Encode(e.to_string());
@@ -307,7 +307,7 @@ fn write_tiff(img: &EncodeImage, compression: TiffCompression, meta: &EncodeMeta
                 im.encoder().write_tag(tiff::tags::Tag::from_u16_exhaustive(700), xmp.as_bytes()).map_err(e)?;
             }
             if $alpha {
-                im.encoder().write_tag(tiff::tags::Tag::ExtraSamples, &[extra][..]).map_err(e)?;
+                im.encoder().write_tag(tiff::tags::Tag::ExtraSamples, &[extra_samples][..]).map_err(e)?;
             }
             im.write_data($data).map_err(e)?;
         }};

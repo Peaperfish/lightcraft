@@ -292,7 +292,7 @@ impl Frame {
                 let mut out = Plane::new(w, h);
                 par_rows(&mut out.data, w, |y, row| {
                     for (x, px) in row.iter_mut().enumerate() {
-                        *px = warp.frame(&o2t, x, y).map_or(0.0, |(_, g)| bilinear(&base, g.x * plan.sx, g.y * plan.sy));
+                        *px = warp.frame(&o2t, x, y).map_or(0.0, |(_, g)| bilinear_plane(&base, g.x * plan.sx, g.y * plan.sy));
                     }
                 });
                 out
@@ -399,12 +399,12 @@ fn alpha_at(a: &Plane, x: f64, y: f64) -> f32 {
     if !(x >= -MARGIN && y >= -MARGIN && x <= w + MARGIN && y <= h + MARGIN) {
         return 0.0;
     }
-    bilinear(a, x, y)
+    bilinear_plane(a, x, y)
 }
 
 /// Bilinear sample of `a` at pixel coordinates `(x, y)`, reading the edge pixel past the edge (as
 /// `Rgb32f::sample_bilinear` does); 0 for an empty plane or a coordinate that is not finite.
-fn bilinear(a: &Plane, x: f64, y: f64) -> f32 {
+fn bilinear_plane(a: &Plane, x: f64, y: f64) -> f32 {
     if a.data.is_empty() || !x.is_finite() || !y.is_finite() {
         return 0.0;
     }

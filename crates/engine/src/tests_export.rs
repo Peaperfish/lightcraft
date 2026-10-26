@@ -1255,7 +1255,8 @@ fn transparent_sources_keep_their_alpha_in_png_tiff_and_webp() {
 #[test]
 fn transparency_stays_on_white_where_it_is_not_kept() {
     let (mut s, id, dir) = library_with_transparent_png("export-alpha-white");
-    for format in ["jpeg", "psd"] {
+    // (AVIF is left out: it composites onto white too, but this build can't decode one to check)
+    for format in ["jpeg", "psd", "jxl"] {
         let e = export_photo(&mut s, id, &ExportOptions::from_json(&json!({"format": format})), 1).unwrap();
         let d = lightcraft_codecs::decode(&e.bytes, Default::default()).unwrap();
         assert!(!d.has_alpha, "{format}");
@@ -1331,6 +1332,47 @@ fn opaque_sources_export_exactly_as_before() {
                 let corner = d.to_srgb8().get(1, d.height as usize - 2);
                 assert!(corner[0] == corner[1] && corner[1] == corner[2] && corner[0] > 150, "grey corner: {corner:?}");
             }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Issue #2976, end to end: a logo with soft, semi-transparent edges keeps them through a crop, a
+/// 10° straighten and an exposure change, with the colour of its opaque part (no white fringe) and
+/// transparent corners, in PNG, TIFF and WebP.
+#[test]
+fn soft_edges_keep_their_colour_through_crop_straighten_and_exposure() {
+    let dir = temp_dir("export-alpha-soft");
+    let src = dir.join("soft.png");
+    // a blue disc of radius 90 with a 24 px soft edge
+    let img = lightcraft_raster::Rgba8::from_fn(400, 300, |x, y| {
+        let d = ((x as f32 + 0.5 - 200.0).powi(2) + (y as f32 + 0.5 - 150.0).powi(2)).sqrt();
+        let a = ((90.0 - d) / 24.0 + 0.5).clamp(0.0, 1.0);
+        if a > 0.0 { [30, 120, 200, (a * 255.0).round() as u8] } else { [0, 0, 0, 0] }
+    });
+    std::fs::write(&src, lightcraft_codecs::encode_png(&lightcraft_codecs::EncodeImage::rgba8(&img), &Default::default()).unwrap()).unwrap();
+    let mut s = Session::new().with_fs();
+    s.execute("library.import", &json!({"paths": [src.to_string_lossy()]})).unwrap();
+    let id = s.catalog.photos().next().unwrap().id;
+    s.execute("crop.set", &json!({"rect": [0.1, 0.1, 0.9, 0.9]})).unwrap();
+    s.execute("crop.set", &json!({"angle": 10.0})).unwrap();
+    s.execute("develop.set", &json!({"ids": [id.0], "control": "light.exposure", "value": 0.7})).unwrap();
+    for format in ["png", "tiff", "webp"] {
+        let e = export_photo(&mut s, id, &ExportOptions::from_json(&json!({"format": format})), 1).unwrap();
+        let d = lightcraft_codecs::decode(&e.bytes, Default::default()).unwrap();
+        assert!(d.has_alpha, "{format}");
+        let px = d.to_srgb8();
+        let (w, h) = (px.width, px.height);
+        assert_eq!(px.get(1, 1)[3], 0, "{format}: transparent corner");
+        let centre = px.get(w / 2, h / 2);
+        assert_eq!(centre[3], 255, "{format}: opaque centre");
+        assert!(centre[2] > 200, "{format}: the exposure brightened the disc: {centre:?}");
+        // every soft-edge pixel has the colour of the opaque part
+        let soft: Vec<[u8; 4]> = px.data.iter().copied().filter(|p| (24..=232).contains(&p[3])).collect();
+        assert!(soft.len() > 500, "{format}: the soft edge survives ({} pixels)", soft.len());
+        let tolerance = if format == "tiff" { 6 } else { 3 };
+        for p in &soft {
+            assert!((0..3).all(|c| p[c].abs_diff(centre[c]) <= tolerance), "{format}: soft-edge colour {p:?} vs the disc's {centre:?}");
         }
     }
     let _ = std::fs::remove_dir_all(&dir);
