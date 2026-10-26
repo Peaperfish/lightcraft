@@ -99,6 +99,12 @@ pub struct SourceInfo {
     /// Noise reduction sizes its radii in the original's pixels ([`Plan::detail_scale`]), so a
     /// preview looks like the full-size render scaled down (issue #960).
     pub native_long: Option<usize>,
+    /// The source's straight alpha (0..1), EXIF-oriented and the size of the source buffer, when it
+    /// has transparency. The pixels handed to the renderer are flattened onto white in linear light
+    /// (`lightcraft_codecs::to_working`, issue #1212); an export that keeps transparency recovers
+    /// their colour (`lightcraft_codecs::unflatten`) and carries this plane through the geometry
+    /// beside the render ([`render_alpha`], issue #2976).
+    pub alpha: Option<Arc<Plane>>,
 }
 
 impl Default for SourceInfo {
@@ -115,6 +121,7 @@ impl Default for SourceInfo {
             mattes: None,
             local_tone: None,
             native_long: None,
+            alpha: None,
         }
     }
 }
@@ -149,6 +156,9 @@ pub struct RenderRequest {
     /// Previews for a monitor with a display profile: render 8-bit into its primaries instead of
     /// `space` (see [`DisplaySpace`]; ignored by deep renders).
     pub display: Option<DisplaySpace>,
+    /// The output keeps the source's transparency (exports to PNG, TIFF and WebP): the caller
+    /// renders unflattened colour and asks [`render_alpha`] for the alpha (issue #2976).
+    pub alpha: bool,
 }
 
 /// A window of the (virtual) full output, in its pixels: what a zoomed view needs, rendered
@@ -186,6 +196,7 @@ impl RenderRequest {
             proof: None,
             window: None,
             display: None,
+            alpha: false,
         }
     }
 }
@@ -196,6 +207,9 @@ pub struct Rendered {
     pub histogram: Histogram,
     /// The high-bit-depth result when [`RenderRequest::depth`] asks for one.
     pub deep: Option<DeepImage>,
+    /// Straight alpha (0..1) of the output, the size of `image`, when the request keeps the
+    /// source's transparency and the source has some ([`render_alpha`]).
+    pub alpha: Option<Plane>,
 }
 
 /// Everything the per-pixel stage needs, precomputed at output resolution.
@@ -532,6 +546,23 @@ pub fn render_cached(src: &Arc<Rgb32f>, info: &SourceInfo, s: &DevelopSettings, 
     render_impl(Src::Shared(src), info, s, req, Some(cache))
 }
 
+/// The source's alpha ([`SourceInfo::alpha`]) through the same geometry as [`render`] of the same
+/// arguments: orientation, crop, straighten, flips, lens corrections, Transform / Upright and the
+/// output size. Develop settings never touch it; areas the warp brings in from outside the source
+/// are transparent. `None` when the source has no alpha or a plane that does not match `src`.
+pub fn render_alpha(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings, req: &RenderRequest) -> Option<Plane> {
+    let alpha = info.alpha.as_deref().filter(|a| a.width == src.width && a.height == src.height)?;
+    let effective = s.effective();
+    let rendition = settings_for(&effective, req);
+    let plan = plan(src, info, &rendition, req);
+    let a = plan.frame.sample_alpha(alpha, plan.w, plan.h);
+    // (only 8-bit renders are cut back to a window, as in `render_impl`)
+    Some(match plan.keep {
+        Some(k) if req.depth == OutputDepth::U8 => a.crop(k.x, k.y, k.w, k.h),
+        _ => a,
+    })
+}
+
 enum Src<'a> {
     Borrowed(&'a Rgb32f),
     Shared(&'a Arc<Rgb32f>),
@@ -603,7 +634,7 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
         let image = deep.to_rgba8();
         let histogram = Histogram::of_srgb8(&image);
         lap("finish (deep)", &mut t);
-        return Rendered { image, histogram, deep: Some(deep) };
+        return Rendered { image, histogram, deep: Some(deep), alpha: None };
     }
     let image = finish::finish(&prep, s, frame, info, req.space, req.display.as_ref(), req.proof);
     lap("finish", &mut t);
@@ -629,7 +660,7 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
         }
         lap("visualize hdr", &mut t);
     }
-    Rendered { image, histogram, deep: None }
+    Rendered { image, histogram, deep: None, alpha: None }
 }
 
 /// The colour a colour-range mask would sample at normalized image point `p` (OkLab of the
