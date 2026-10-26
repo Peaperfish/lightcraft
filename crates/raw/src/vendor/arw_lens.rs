@@ -1,6 +1,7 @@
 //! Sony's in-file lens-correction records (shading, lateral chromatic aberration, distortion): bounded decoding of
 //! the raw image IFD's fields and their encrypted `SR2SubIFD` copies into [`SonyLensCorrections`], and validated
-//! ILCE-7RM4A and ILCE-7CR distortion tables into DNG warps for the shared optics pipeline.
+//! distortion tables into DNG warps for the shared optics pipeline: the ILCE-7RM4A's conversion, and the
+//! corrected-radius conversion for the bodies in [`CORRECTED_RADIUS`] (the ILCE-7CR).
 //!
 //! Tag identity/layout: https://exiftool.org/TagNames/EXIF.html (`0x7031` to `0x7037`, signed shorts) and
 //! https://exiftool.org/TagNames/Sony.html#SR2SubIFD (`0x797d`, `0x7980`, `0x7982`). The `SR2SubIFD` setting tags
@@ -34,18 +35,36 @@ const DISTORTION: Tags = Tags { setting: (0x7036, 0x7981), table: (0x7037, 0x798
 /// TIFF field types.
 const SHORT: u16 = 3;
 const SSHORT: u16 = 8;
-/// Models using the validated A7R IVA conversion. The A7CR uses a separate conversion.
+/// Models using the validated A7R IVA conversion. Bodies in [`CORRECTED_RADIUS`] use a separate conversion.
 /// ILCE-7RM4 and ILCE-7RM4A are distinct models, not interchangeable aliases.
 const DISTORTION_MODELS: &[&str] = &["ILCE-7RM4A"];
 /// Most directory entries scanned: a classic TIFF directory's largest count, also bounding a BigTIFF one.
 const MAX_ENTRIES: usize = 1 << 16;
 const SAMPLES: usize = 1024;
 const MAX_ERROR: f64 = 0.0005;
-/// Empirical A7CR unit, fixed on four FE 24-50mm files before checking the other files and lenses.
-/// The camera-JPEG measurements and remaining coverage limits are in docs/sony-lens-corrections.md.
-const A7CR_UNIT: f64 = 15559.300457825264;
-const A7CR_FRAME: (usize, usize) = (9504, 6336);
-const A7CR_APPROXIMATION_PX: f64 = 0.25;
+/// Largest polynomial approximation error of the corrected-radius conversion, px at a 1440 px long edge.
+const CORRECTED_RADIUS_APPROXIMATION_PX: f64 = 0.25;
+
+/// A body whose distortion table follows the corrected-radius camera-JPEG convention ([`corrected_radius_distortion`]),
+/// measured on that body alone: its full-frame crop (the only framing converted) and its table unit.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CorrectedRadiusBody {
+    model: &'static str,
+    frame: (usize, usize),
+    unit: f64,
+}
+
+/// The bodies converted with the corrected-radius convention, matched by exact model name. A body joins only after
+/// its own camera-JPEG validation (docs/sony-lens-corrections.md); a matching sensor size or table layout is not
+/// evidence of the same unit.
+const CORRECTED_RADIUS: &[CorrectedRadiusBody] = &[
+    // Empirical unit, fixed on four FE 24-50mm files before checking the other files and lenses.
+    CorrectedRadiusBody { model: "ILCE-7CR", frame: (9504, 6336), unit: 15559.300457825264 },
+];
+
+fn corrected_radius_body(model: &str) -> Option<CorrectedRadiusBody> {
+    CORRECTED_RADIUS.iter().find(|b| b.model == model).copied()
+}
 
 #[derive(Clone, Copy)]
 struct Tags {
@@ -312,17 +331,18 @@ pub(super) fn corrections(
     // Only the validated scope reaches the conversion: the raw IFD's table, as the TIFF reader parsed it, of a Bayer
     // image whose image crop and reference are native 3:2 (DefaultCrop can keep native geometry while Sony's tags
     // select an aspect crop).
-    let a7cr = model == "ILCE-7CR";
-    let validated_model = DISTORTION_MODELS.contains(&model) || a7cr;
+    let corrected_radius = corrected_radius_body(model);
+    let validated_model = DISTORTION_MODELS.contains(&model) || corrected_radius.is_some();
     let in_mode = !geometry.linear_ycbcr
         && geometry.native_3_2
         && distortion_table.source == Some(SonySource::RawIfd)
-        && (!a7cr || ((geometry.reference.width, geometry.reference.height) == A7CR_FRAME && geometry.image_crop == geometry.reference));
-    let a7cr_auto = distortion_setting.value.is_some_and(|s| matches!(s.meaning, SonySettingMeaning::Auto | SonySettingMeaning::ForcedAuto));
+        && corrected_radius
+            .is_none_or(|b| (geometry.reference.width, geometry.reference.height) == b.frame && geometry.image_crop == geometry.reference);
+    let camera_auto = distortion_setting.value.is_some_and(|s| matches!(s.meaning, SonySettingMeaning::Auto | SonySettingMeaning::ForcedAuto));
     let (w, h) = (geometry.storage_width, geometry.storage_height);
-    let warp = match &distortion_table.value {
-        Some(table) if in_mode && a7cr && a7cr_auto => a7cr_distortion(table, Rect::new(0, 0, w, h), geometry.reference),
-        Some(table) if in_mode && !a7cr => distortion(model, table, Rect::new(0, 0, w, h), geometry.reference),
+    let warp = match (&distortion_table.value, corrected_radius) {
+        (Some(table), Some(body)) if in_mode && camera_auto => corrected_radius_distortion(body, table, Rect::new(0, 0, w, h), geometry.reference),
+        (Some(table), None) if in_mode => distortion(model, table, Rect::new(0, 0, w, h), geometry.reference),
         _ => None,
     };
     let distortion_status = match &distortion_table.value {
@@ -330,7 +350,7 @@ pub(super) fn corrections(
         Some(_) if warp.is_some() => SonyLensStatus::Applied,
         Some(_) if !validated_model => SonyLensStatus::NotValidatedModel,
         Some(_) if !in_mode => SonyLensStatus::NotValidatedMode,
-        Some(_) if a7cr && !a7cr_auto => SonyLensStatus::CameraCorrectionDisabled,
+        Some(_) if corrected_radius.is_some() && !camera_auto => SonyLensStatus::CameraCorrectionDisabled,
         Some(table) if table.iter().all(|v| *v == 0) => SonyLensStatus::Neutral,
         Some(_) => SonyLensStatus::Rejected,
     };
@@ -346,12 +366,12 @@ pub(super) fn corrections(
     (Some(record), warp)
 }
 
-/// A7CR camera-JPEG convention, measured independently of the ILCE-7RM4A conversion below.
-/// For output radius rho, the corrected radius is rho / zoom. The table gives source radius at that
-/// corrected radius. Its knots use the full-frame diagonal, not storage padding. Off/unknown settings
-/// and unvalidated capture modes are excluded by the caller.
-fn a7cr_distortion(table: &[i16; 16], active: Rect, crop: Rect) -> Option<Opcode> {
-    if (crop.width, crop.height) != A7CR_FRAME
+/// The corrected-radius camera-JPEG convention, measured on the A7CR independently of the ILCE-7RM4A conversion
+/// below, with each body's own frame and unit. For output radius rho, the corrected radius is rho / zoom. The table
+/// gives source radius at that corrected radius. Its knots use the full-frame diagonal, not storage padding.
+/// Off/unknown settings and unvalidated capture modes are excluded by the caller.
+fn corrected_radius_distortion(body: CorrectedRadiusBody, table: &[i16; 16], active: Rect, crop: Rect) -> Option<Opcode> {
+    if (crop.width, crop.height) != body.frame
         || crop != crop.clipped(active.width, active.height)
         || table.iter().all(|v| *v == 0)
         || table.iter().any(|v| !(-4096..=4096).contains(v))
@@ -364,7 +384,7 @@ fn a7cr_distortion(table: &[i16; 16], active: Rect, crop: Rect) -> Option<Opcode
         let at = r / spacing;
         let i = (at.floor() as usize).min(14);
         let (a, b) = (f64::from(table[i]), f64::from(table[i + 1]));
-        r * (1.0 + (a + (b - a) * (at - i as f64)) / A7CR_UNIT)
+        r * (1.0 + (a + (b - a) * (at - i as f64)) / body.unit)
     };
     let border_min = cw.min(ch) / 2.0;
     let border_max = cw.hypot(ch) / 2.0;
@@ -420,7 +440,7 @@ fn a7cr_distortion(table: &[i16; 16], active: Rect, crop: Rect) -> Option<Opcode
         let r2 = r * r;
         let derivative = k[0] + r2 * (3.0 * k[1] + r2 * (5.0 * k[2] + r2 * 7.0 * k[3]));
         let error_px = (fit * radius - source(r * radius / zoom)).abs() * 1440.0 / cw;
-        if !error_px.is_finite() || error_px > A7CR_APPROXIMATION_PX || derivative <= 0.0 {
+        if !error_px.is_finite() || error_px > CORRECTED_RADIUS_APPROXIMATION_PX || derivative <= 0.0 {
             return None;
         }
     }
@@ -1175,6 +1195,26 @@ mod tests {
         }
     }
 
+    fn a7cr_distortion(table: &[i16; 16], active: Rect, crop: Rect) -> Option<Opcode> {
+        corrected_radius_distortion(corrected_radius_body("ILCE-7CR").unwrap(), table, active, crop)
+    }
+
+    #[test]
+    fn corrected_radius_bodies_are_exact_unique_and_separate_from_the_a7r_iva_conversion() {
+        for (i, body) in CORRECTED_RADIUS.iter().enumerate() {
+            assert_eq!(body.model.trim(), body.model);
+            assert!(!DISTORTION_MODELS.contains(&body.model), "{} would get two conversions", body.model);
+            assert!(CORRECTED_RADIUS[i + 1..].iter().all(|b| b.model != body.model), "{} listed twice", body.model);
+            assert!(is_3_2(Rect::new(0, 0, body.frame.0, body.frame.1)), "{}: only native 3:2 frames are converted", body.model);
+            assert!(body.unit.is_finite() && body.unit > 0.0);
+            assert_eq!(corrected_radius_body(body.model), Some(*body));
+        }
+        // Exact names only; a body with the same sensor is not covered until it is measured (docs/sony-lens-corrections.md).
+        for model in ["", "ILCE-7CR ", "ilce-7cr", "ILCE-7C", "ILCE-7RM4A", "ILCE-7RM5", "ILCE-7RM6"] {
+            assert_eq!(corrected_radius_body(model), None, "{model}");
+        }
+    }
+
     fn a7cr_geometry(storage: (usize, usize)) -> SonyLensGeometry {
         let crop = Rect::new(32, 20, 9504, 6336);
         SonyLensGeometry {
@@ -1208,7 +1248,7 @@ mod tests {
                 };
                 let geometry = a7cr_geometry((9728, 6656));
                 assert_eq!(run("ILCE-7CR", geometry.clone()), (status, status == Applied));
-                for model in ["ILCE-7CR ", "ILCE-7CR unknown", "ILCE-7C", "ILCE-7CM2", "ILCE-7RM4", "ILCE-7RM6"] {
+                for model in ["ILCE-7CR ", "ILCE-7CR unknown", "ILCE-7C", "ILCE-7CM2", "ILCE-7RM4", "ILCE-7RM5", "ILCE-7RM6"] {
                     assert_eq!(run(model, geometry.clone()), (NotValidatedModel, false), "{model}");
                 }
                 let mut linear = geometry.clone();

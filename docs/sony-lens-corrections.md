@@ -336,6 +336,14 @@ Before restoring main's crop precedence, re-exporting the 24, 200 and 600 mm ref
 the model restriction produced byte-identical corrected PNGs to the earlier validated exports. Isolated headless app checks showed the A7R IVA profile
 controls present and the A7 III profile controls absent, with no notices and completed RAW renders.
 
+The A7CR's conversion is table-driven: `CORRECTED_RADIUS` in `crates/raw/src/vendor/arw_lens.rs` lists each body
+with its exact model name, full-frame crop (the only framing converted) and its own measured table unit, and the
+conversion, the Auto / forced-Auto setting gate, the mode checks and the 0.25 px approximation gate are shared. Its
+only entry is the ILCE-7CR. A body whose camera JPEGs fit this convention, at its own unit, is added there with its
+validation recorded on this page; one that fits the A7R IVA's convention joins `DISTORTION_MODELS` instead. A test
+keeps the two lists disjoint, so a photo never gets both. Bodies with a similar sensor, such as the ILCE-7RM5
+(61 MP, like the A7CR and the A7R IVA), stay uncorrected until they are measured.
+
 Before enabling another body, compare corrected and uncorrected renders against independent references
 across multiple lenses/focal lengths and photographs with features near the edges and corners. Record
 residuals and spatial coverage, and check crop/aspect and compression variants. Embedded JPEGs are

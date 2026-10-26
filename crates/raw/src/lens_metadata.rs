@@ -149,7 +149,8 @@ pub enum SonyLensStatus {
     /// Decoded only: the model is validated, but not this coding or framing (linear YCbCr, a non-3:2 crop) or a
     /// table found only in the `SR2SubIFD`.
     NotValidatedMode,
-    /// A7CR distortion is Off, unavailable, missing or unknown. Its uncorrected JPEG and render keep the same geometry.
+    /// Distortion is Off, unavailable, missing or unknown on a body converted only when the camera's correction is on
+    /// (the corrected-radius bodies: the A7CR). Its uncorrected JPEG and render keep the same geometry.
     CameraCorrectionDisabled,
     /// Validated scope, but the table is all zeros: a valid no-op, nothing to apply.
     Neutral,
