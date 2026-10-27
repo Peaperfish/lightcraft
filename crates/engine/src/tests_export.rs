@@ -1223,7 +1223,8 @@ fn library_with_transparent_png(tag: &str) -> (Session, lightcraft_catalog::Phot
 }
 
 /// Issue #2976: PNG, TIFF and WebP exports of a transparent source keep its alpha, at 8 and 16 bits,
-/// with the colour of the opaque part as it was (no white mixed in); TIFF stores it associated.
+/// with the colour of the opaque part as it was (no white mixed in); TIFF stores it unassociated
+/// (`ExtraSamples` = 2, as #1670 writes it).
 #[test]
 fn transparent_sources_keep_their_alpha_in_png_tiff_and_webp() {
     let (mut s, id, dir) = library_with_transparent_png("export-alpha");
@@ -1243,8 +1244,8 @@ fn transparent_sources_keep_their_alpha_in_png_tiff_and_webp() {
         let edge = d.to_srgb8().get(75, 100);
         assert!(edge[0].abs_diff(200) <= 2 && edge[1].abs_diff(40) <= 2 && edge[2].abs_diff(30) <= 2, "{format} {depth}-bit edge {edge:?}");
         if format == "tiff" {
-            // ExtraSamples (338), SHORT, count 1, value 1: associated alpha
-            assert!(e.bytes.windows(10).any(|w| w == [0x52, 0x01, 3, 0, 1, 0, 0, 0, 1, 0]), "{depth}-bit TIFF alpha is associated");
+            // ExtraSamples (338), SHORT, count 1, value 2: unassociated alpha
+            assert!(e.bytes.windows(10).any(|w| w == [0x52, 0x01, 3, 0, 1, 0, 0, 0, 2, 0]), "{depth}-bit TIFF alpha is unassociated");
         }
     }
     let _ = std::fs::remove_dir_all(&dir);
@@ -1370,10 +1371,55 @@ fn soft_edges_keep_their_colour_through_crop_straighten_and_exposure() {
         // every soft-edge pixel has the colour of the opaque part
         let soft: Vec<[u8; 4]> = px.data.iter().copied().filter(|p| (24..=232).contains(&p[3])).collect();
         assert!(soft.len() > 500, "{format}: the soft edge survives ({} pixels)", soft.len());
-        let tolerance = if format == "tiff" { 6 } else { 3 };
+        let tolerance = 3;
         for p in &soft {
             assert!((0..3).all(|c| p[c].abs_diff(centre[c]) <= tolerance), "{format}: soft-edge colour {p:?} vs the disc's {centre:?}");
         }
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Review of #2976: a hard edge (the issue's opaque red rectangle on transparency) resampled by a
+/// downscale or a straighten keeps its colour wherever its alpha is partial: no white mixed in.
+#[test]
+fn hard_edges_stay_red_when_downscaled_or_straightened() {
+    let (mut s, id, dir) = library_with_transparent_png("export-alpha-hard-edge");
+    let straightened = |s: &mut Session| s.execute("crop.set", &json!({"angle": 5.0})).map(|_| ());
+    let cases: [(&str, serde_json::Value, bool); 2] =
+        [("longEdge 150", json!({"format": "png", "longEdge": 150}), false), ("5° straighten", json!({"format": "png"}), true)];
+    for (name, options, straighten) in cases {
+        if straighten {
+            straightened(&mut s).unwrap();
+        }
+        let e = export_photo(&mut s, id, &ExportOptions::from_json(&options), 1).unwrap();
+        let d = lightcraft_codecs::decode(&e.bytes, Default::default()).unwrap();
+        assert!(d.has_alpha, "{name}");
+        let px = d.to_srgb8();
+        let partial: Vec<[u8; 4]> = px.data.iter().copied().filter(|p| p[3] > 0 && p[3] < 255).collect();
+        assert!(partial.len() > 20, "{name}: the edge is resampled ({} partial pixels)", partial.len());
+        for p in &partial {
+            assert!(p[0].abs_diff(200) <= 4 && p[1].abs_diff(40) <= 4 && p[2].abs_diff(30) <= 4, "{name}: edge pixel {p:?} is not red (200, 40, 30)");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Review of #2976: a transparency plane that does not fit the source's pixels fails the export
+/// with an error; the file is never written as flattened RGB in its place.
+#[test]
+fn a_transparency_that_does_not_fit_fails_the_export() {
+    use lightcraft_pipeline::{OutputDepth, OutputSpace, SourceInfo};
+    use std::sync::Arc;
+    let (mut s, id, dir) = library_with_transparent_png("export-alpha-mismatch");
+    let image = Arc::new(lightcraft_raster::Rgb32f::from_fn(300, 200, |_, _| [1.0; 3]));
+    let info = SourceInfo { alpha: Some(Arc::new(lightcraft_raster::Plane::new(10, 10))), ..Default::default() };
+    let mut job = s.export_job_with_alpha(id, 300, 200, OutputSpace::Srgb, OutputDepth::U8, true).unwrap();
+    job.source = crate::media::SourceRef::Loaded(Box::new(crate::media::DecodedSource::new(image.clone(), Some(info.clone()))));
+    let err = job.run().rendered.err().expect("the export fails");
+    assert!(err.contains("transparency"), "{err}");
+    // the same source exported without transparency (JPEG) renders as before
+    let mut job = s.export_job_with_alpha(id, 300, 200, OutputSpace::Srgb, OutputDepth::U8, false).unwrap();
+    job.source = crate::media::SourceRef::Loaded(Box::new(crate::media::DecodedSource::new(image, Some(info))));
+    assert!(job.run().rendered.is_ok());
     let _ = std::fs::remove_dir_all(&dir);
 }

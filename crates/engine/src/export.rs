@@ -68,8 +68,8 @@ impl ExportFormat {
         !matches!(self, Self::Original | Self::Dng)
     }
 
-    /// Formats whose exports keep a transparent source's alpha (straight in PNG and WebP,
-    /// associated in TIFF); the others composite it onto white (issue #2976).
+    /// Formats whose exports keep a transparent source's alpha (straight, unassociated alpha, as
+    /// #1670 writes it); the others composite it onto white (issue #2976).
     pub fn keeps_alpha(self) -> bool {
         matches!(self, Self::Png | Self::Tiff | Self::Webp)
     }
@@ -1451,7 +1451,7 @@ pub fn encode_with_metadata(img: &Rgba8, o: &ExportOptions, meta: Option<&Metada
             return encode_jpeg_with_limit(o, |q| encode::encode_jpeg(&e, q, sub, &meta));
         }
         ExportFormat::Png => encode::encode_png(&e, &meta),
-        ExportFormat::Tiff => encode::encode_tiff_associated(&e, o.tiff_compression, &meta),
+        ExportFormat::Tiff => encode::encode_tiff(&e, o.tiff_compression, &meta),
         ExportFormat::Psd => encode::encode_psd(&e, &meta),
         ExportFormat::Webp => encode::encode_webp_lossless(&e, &meta),
         ExportFormat::Avif => encode::encode_avif(&e, o.quality, 8, &meta),
@@ -1597,7 +1597,7 @@ pub fn encode_deep(img: &DeepImage, o: &ExportOptions, meta: Option<&Metadata>) 
 }
 
 /// [`encode_deep`] keeping straight alpha `alpha` (the image's size) in PNG and TIFF when it is
-/// not opaque everywhere (associated in TIFF).
+/// not opaque everywhere.
 fn encode_deep_with_alpha(img: &DeepImage, alpha: Option<&Plane>, o: &ExportOptions, meta: Option<&Metadata>) -> Result<Vec<u8>, String> {
     let meta_src = meta;
     let mut alpha = match alpha {
@@ -1642,7 +1642,7 @@ fn encode_deep_with_alpha(img: &DeepImage, alpha: Option<&Plane>, o: &ExportOpti
     let r = match (o.format, &img.samples) {
         (ExportFormat::Png, DeepSamples::F32(v)) if img.space == OutputSpace::Rec2020 => lightcraft_codecs::encode_png_pq(w, h, v, &meta),
         (ExportFormat::Png, _) => encode::encode_png(&e, &meta),
-        (ExportFormat::Tiff, _) => encode::encode_tiff_associated(&e, o.tiff_compression, &meta),
+        (ExportFormat::Tiff, _) => encode::encode_tiff(&e, o.tiff_compression, &meta),
         (ExportFormat::Psd, _) => encode::encode_psd(&e, &meta),
         (ExportFormat::RenderedDng, DeepSamples::F32(v)) => {
             let m = meta_src.cloned().unwrap_or_default();
@@ -1839,8 +1839,12 @@ fn prepare_guarded(
         let gain_map = o.hdr_output() && o.format == ExportFormat::Jpeg;
         // (HDR files are written without alpha: their transparent areas stay on white)
         let alpha = o.format.keeps_alpha() && !o.hdr_output();
+        let alpha_file = can_carry_alpha(&p.format);
         let job = session.export_job_with_alpha(id, w, h, o.effective_space(), o.effective_depth(), alpha)?;
         let weight = render_weight(full_px, long, job.level, w.saturating_mul(h));
+        // a file that can carry transparency, exported to a format that keeps it: its alpha planes too
+        // (whether it has any is only known once it is decoded)
+        let weight = if alpha && alpha_file { weight.saturating_add(alpha_weight(full_px, long, job.level, w.saturating_mul(h))) } else { weight };
         if let Some(why) = too_big_for_memory((w, h), native_px, weight, crate::memory::total_ram()) {
             return Err(format!("{label}: {why}"));
         }
@@ -1907,6 +1911,21 @@ fn too_big_for_memory(out: (usize, usize), native_px: usize, weight: usize, ram:
 /// `level` into `out_px` output pixels: the decoded source (linear RGB f32, 12 B/px) plus the
 /// pipeline's planes and the encoded output (~36 B per output pixel). Measured: a 24 MP export
 /// peaks at ~1.2 GB, one at 2048 px from the 2560 px preview at ~150 MB.
+/// What keeping a transparent source's alpha adds to [`render_weight`] (issue #2976): the source's
+/// alpha plane and its oriented or prefiltered copy (8 bytes a source pixel), and at the output the
+/// colour and alpha resampled side by side, the alpha plane and the RGBA image encoded (24 bytes
+/// a pixel).
+fn alpha_weight(full_px: usize, long: usize, level: crate::media::SourceLevel, out_px: usize) -> usize {
+    let src_px = render_weight(full_px, long, level, 0) / 12;
+    src_px.saturating_mul(8).saturating_add(out_px.saturating_mul(24))
+}
+
+/// Whether a photo of catalog format `format` (its upper-case extension, `Photo::format`) is a
+/// kind of file whose decoder can give it transparency.
+fn can_carry_alpha(format: &str) -> bool {
+    matches!(format.to_ascii_uppercase().as_str(), "PNG" | "TIF" | "TIFF" | "WEBP" | "GIF" | "BMP" | "JXL" | "HEIC" | "HEIF" | "HIF")
+}
+
 fn render_weight(full_px: usize, long: usize, level: crate::media::SourceLevel, out_px: usize) -> usize {
     let edge = level.max_edge().min(long.max(1));
     let scale = edge as f64 / long.max(1) as f64;
@@ -3946,6 +3965,32 @@ mod tests {
         let (r, written, _) = lanes_batch(&mut s, &ids, &o, 3, true, usize::MAX);
         assert!(r.is_err());
         assert_eq!(written.len(), 1, "only the photo before the failure");
+    }
+
+    /// Issue #2976: a file that can carry transparency, exported to a format that keeps it, has its
+    /// alpha planes counted; any other export weighs what it did.
+    #[test]
+    fn alpha_planes_are_counted_only_where_transparency_can_be_kept() {
+        let dir = crate::tests_xmp::temp_dir("export-alpha-weight");
+        let img = Rgba8::from_fn(120, 80, |x, y| [(x * 2) as u8, (y * 3) as u8, 90, 255]);
+        let png = dir.join("logo.png");
+        std::fs::write(&png, encode_image(&img, &ExportOptions { format: ExportFormat::Png, ..Default::default() }).unwrap()).unwrap();
+        let jpg = dir.join("photo.jpg");
+        std::fs::write(&jpg, encode_image(&img, &ExportOptions::default()).unwrap()).unwrap();
+        let mut s = crate::Session::new().with_fs();
+        s.execute("library.import", &json!({"paths": [png.to_string_lossy(), jpg.to_string_lossy()]})).unwrap();
+        let id_of = |s: &crate::Session, name: &str| s.catalog.photos().find(|p| p.file_name == name).unwrap().id;
+        let (logo, photo) = (id_of(&s, "logo.png"), id_of(&s, "photo.jpg"));
+        let weight = |s: &mut crate::Session, id, format| prepare_export(s, id, &ExportOptions { format, ..Default::default() }, 1).unwrap().weight;
+        // the same output size in each format: the difference is the alpha planes alone
+        let (logo_png, logo_tiff, logo_jpeg) =
+            (weight(&mut s, logo, ExportFormat::Png), weight(&mut s, logo, ExportFormat::Tiff), weight(&mut s, logo, ExportFormat::Jpeg));
+        assert!(logo_png > logo_jpeg, "a PNG exported as PNG counts its alpha: {logo_png} vs {logo_jpeg}");
+        assert_eq!(logo_png, logo_tiff);
+        let (photo_png, photo_jpeg) = (weight(&mut s, photo, ExportFormat::Png), weight(&mut s, photo, ExportFormat::Jpeg));
+        assert_eq!(photo_png, photo_jpeg, "a JPEG source weighs the same in any format");
+        assert!(can_carry_alpha("png") && can_carry_alpha("TIF") && !can_carry_alpha("JPG") && !can_carry_alpha("NEF"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

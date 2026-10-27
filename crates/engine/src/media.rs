@@ -23,7 +23,7 @@ use lightcraft_catalog::{MediaKind, Op, Photo, PhotoId, Source};
 use lightcraft_develop::DevelopSettings;
 use lightcraft_pipeline::{Quality, RenderRequest, Rendered, SourceInfo, StageCache};
 use lightcraft_preview::{Hash128, Hasher128, Lru, PreviewCache};
-use lightcraft_raster::{Histogram, Rgb32f, Rgba8};
+use lightcraft_raster::{Histogram, Plane, Rgb32f, Rgba8};
 use serde::{Deserialize, Serialize};
 
 const SETTINGS_HASH_ENTRIES: usize = 1024;
@@ -1025,24 +1025,22 @@ impl RenderJob {
                 // (the result if the transparency can't follow the render, made before `self.info` moves)
                 let alpha_failed = self.request.alpha.then(|| self.failed("the transparency did not follow the render".into()));
                 let info = source.info_or(self.info);
-                // an export that keeps transparency develops the colour without the white the pixels
-                // were flattened onto, and carries the alpha through the same geometry (issue #2976)
-                let straight =
-                    if self.request.alpha { info.alpha.as_deref().and_then(|a| lightcraft_codecs::unflatten(src, a)).map(Arc::new) } else { None };
-                let src = straight.as_ref().unwrap_or(src);
-                // (a straight picture is this job's own: no stage of an earlier render applies to it)
-                let stages = if straight.is_some() { None } else { self.stages.as_deref() };
+                // an export that keeps transparency, of a source that has some: the render resamples
+                // the pixels with their alpha and develops the colour without the white they were
+                // flattened onto (issue #2976); every other render is the one it always was
+                let request = RenderRequest { alpha: self.request.alpha && info.alpha.is_some(), ..self.request };
                 // Thumbnails (many small jobs side by side) stay on the CPU; views and exports use
                 // the GPU when there is one.
                 let gpu = self.cache.is_none();
-                let (mut rendered, gpu_fallback) = develop_reporting(src, &info, &self.settings, &self.request, stages, gpu);
-                if straight.is_some() {
-                    rendered.alpha = lightcraft_pipeline::render_alpha(src, &info, &self.settings, &self.request)
-                        .filter(|a| (a.width, a.height) == (rendered.image.width, rendered.image.height));
-                    // (the colour is unflattened: without its alpha the file would be wrong at soft edges)
-                    if let (None, Some(failed)) = (&rendered.alpha, alpha_failed) {
-                        return failed;
-                    }
+                let (mut rendered, gpu_fallback) = develop_reporting(src, &info, &self.settings, &request, self.stages.as_deref(), gpu);
+                // a plane that doesn't fit the pixels or the render fails the export: written without
+                // its alpha, the file would be wrong at every soft edge
+                let fits = |a: &Plane| (a.width, a.height) == (rendered.image.width, rendered.image.height);
+                if request.alpha
+                    && !rendered.alpha.as_ref().is_some_and(fits)
+                    && let Some(failed) = alpha_failed
+                {
+                    return failed;
                 }
                 // for a display profile: the image goes to the display's values, the histogram
                 // and the cached view preview stay sRGB
@@ -1130,8 +1128,10 @@ fn develop_image(
     stages: Option<&StageCache>,
     gpu: bool,
 ) -> (Rendered, Option<String>) {
-    // LUT profiles have no GPU stage: they render on the CPU
+    // LUT profiles have no GPU stage: they render on the CPU, and so does a render that keeps
+    // transparency (the GPU stages don't sample the alpha yet: issue #2976)
     let fallback = if gpu
+        && !req.alpha
         && !lightcraft_pipeline::lut::is_lut_profile(&s.profile.id)
         && !s.masks.iter().any(|m| m.visible && m.refine > 0.0)
         && req.proof.is_none()

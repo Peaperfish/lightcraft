@@ -526,7 +526,9 @@ fn auto_straighten_leaves_steep_lines_alone() {
 }
 
 /// Issue #2976: an alpha plane resamples exactly as the pixels do (here: a grey copy of the same
-/// plane), for plain, cropped / straightened / flipped / resized and warped frames; areas the warp
+/// plane), for plain, cropped / straightened / flipped / resized and warped frames, and the colour
+/// that comes back from a source flattened onto white is its own colour wherever there is any
+/// alpha: the flatten is undone after resampling, so no white is mixed into edges. Areas the warp
 /// brings in from outside the source are transparent.
 #[test]
 fn alpha_follows_the_pixels_through_every_frame() {
@@ -535,8 +537,10 @@ fn alpha_follows_the_pixels_through_every_frame() {
     use lightcraft_geom::Rect;
     use lightcraft_raster::Plane;
     let (w, h) = (240, 160);
-    let plane = Plane::from_fn(w, h, |x, y| grid_value(Point::new(x as f64 + 0.5, y as f64 + 0.5), 24.0));
-    let grey = Rgb32f::from_fn(w, h, |x, y| [plane.get(x, y); 3]);
+    let colour = [0.6f32, 0.2, 0.1];
+    let soft = Plane::from_fn(w, h, |x, y| grid_value(Point::new(x as f64 + 0.5, y as f64 + 0.5), 24.0));
+    // a hard-edged rectangle: the case a resample mixes white into when it unflattens too early
+    let hard = Plane::from_fn(w, h, |x, y| if (60..180).contains(&x) && (40..120).contains(&y) { 1.0 } else { 0.0 });
     let mut cropped = DevelopSettings { orientation: Orientation::Rotate90, ..Default::default() };
     cropped.crop.geometry.rect = Rect::new(0.1, 0.2, 0.9, 0.7);
     cropped.crop.geometry.angle = 3.0;
@@ -544,23 +548,48 @@ fn alpha_follows_the_pixels_through_every_frame() {
     let mut lens = DevelopSettings::default();
     lens.optics.distortion = 40.0;
     lens.geometry.vertical = -30.0;
-    for (name, s, out) in [("plain", DevelopSettings::default(), (w, h)), ("cropped", cropped, (90, 70)), ("warped", lens, (180, 120))] {
-        let f = Frame::new(w, h, &s, true);
-        let (ow, oh) = out;
-        let a = f.sample_alpha(&plane, ow, oh);
-        let c = f.sample(&grey, ow, oh);
-        assert_eq!((a.width, a.height), (ow, oh), "{name}");
-        let mut outside = 0;
-        for (i, (&av, px)) in a.data.iter().zip(&c.data).enumerate() {
-            if px[1] == crate::geometry::BLANK[1] && px[0] == crate::geometry::BLANK[0] {
-                assert_eq!(av, 0.0, "{name}: outside the source at {i}");
-                outside += 1;
-                continue;
+    for (plane_name, plane) in [("soft", &soft), ("hard", &hard)] {
+        let grey = Rgb32f::from_fn(w, h, |x, y| [plane.get(x, y); 3]);
+        let flat = Rgb32f::from_fn(w, h, |x, y| {
+            let a = plane.get(x, y);
+            colour.map(|c| c * a + (1.0 - a))
+        });
+        for (frame_name, s, out) in
+            [("plain", DevelopSettings::default(), (w, h)), ("cropped", cropped.clone(), (90, 70)), ("warped", lens.clone(), (180, 120))]
+        {
+            let name = format!("{plane_name} {frame_name}");
+            let f = Frame::new(w, h, &s, true);
+            let (ow, oh) = out;
+            let (img, a) = f.sample_with_alpha(&flat, plane, ow, oh);
+            let g = f.sample(&grey, ow, oh);
+            assert_eq!((a.width, a.height, img.width, img.height), (ow, oh, ow, oh), "{name}");
+            let mut outside = 0;
+            for (i, ((&av, gp), cp)) in a.data.iter().zip(&g.data).zip(&img.data).enumerate() {
+                if gp[1] == crate::geometry::BLANK[1] && gp[0] == crate::geometry::BLANK[0] {
+                    assert_eq!(av, 0.0, "{name}: outside the source at {i}");
+                    outside += 1;
+                    continue;
+                }
+                assert!((av - gp[1].clamp(0.0, 1.0)).abs() < 1e-4, "{name} at {i}: alpha {av} vs pixel {}", gp[1]);
+                if av > 0.01 {
+                    assert!(
+                        cp.iter().zip(colour).all(|(c, want)| (c - want).abs() < 2e-3),
+                        "{name} at {i} (alpha {av}): colour {cp:?}, not {colour:?}"
+                    );
+                }
             }
-            assert!((av - px[1].clamp(0.0, 1.0)).abs() < 1e-4, "{name} at {i}: alpha {av} vs pixel {}", px[1]);
-        }
-        if name == "warped" {
-            assert!(outside > 0, "the warp brings in area from outside the source");
+            if frame_name == "warped" {
+                assert!(outside > 0, "the warp brings in area from outside the source");
+            }
         }
     }
+    // a plane that is opaque everywhere gives back the plain resample (to float rounding: the
+    // prefilter brings 1.0 back as 0.99999994; opaque sources never take this path)
+    let opaque = Plane::from_fn(w, h, |_, _| 1.0);
+    let src = Rgb32f::from_fn(w, h, |x, y| [x as f32 / w as f32, y as f32 / h as f32, 0.3]);
+    let f = Frame::new(w, h, &cropped, true);
+    let (img, a) = f.sample_with_alpha(&src, &opaque, 90, 70);
+    let plain = f.sample(&src, 90, 70);
+    assert!(img.data.iter().zip(&plain.data).all(|(p, q)| p.iter().zip(q).all(|(a, b)| (a - b).abs() < 1e-5)));
+    assert!(a.data.iter().all(|&v| (v - 1.0).abs() < 1e-5));
 }
