@@ -932,3 +932,57 @@ fn jxl_bad_input_is_an_error() {
         encode_jxl(&EncodeImage::new(1, 1, 3, Samples::U8(&one)), &JxlOptions { quality: 1, ..Default::default() }, &EncodeMeta::default()).unwrap();
     assert_eq!(decode(&b, DecodeOptions::default()).unwrap().width, 1);
 }
+
+/// An associated-alpha TIFF (`ExtraSamples` = 1) stores its colour premultiplied in the encoded
+/// values, as image editors write it: it decodes back to the straight colour (8 and 16 bits).
+#[test]
+fn associated_alpha_tiff_decodes_to_straight_colour() {
+    use tiff::encoder::{TiffEncoder, colortype};
+    let straight: [[u8; 4]; 4] = [[200, 40, 30, 255], [200, 40, 30, 128], [10, 220, 90, 64], [255, 255, 255, 0]];
+    let pre = |p: [u8; 4]| [0, 1, 2].map(|c| ((p[c] as u32 * p[3] as u32 + 127) / 255) as u8);
+    let write8 = || {
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        {
+            let mut encoder = TiffEncoder::new(&mut cursor).unwrap();
+            let mut image = encoder.new_image::<colortype::RGBA8>(4, 1).unwrap();
+            image.encoder().write_tag(tiff::tags::Tag::ExtraSamples, &[1u16][..]).unwrap();
+            let data: Vec<u8> = straight
+                .iter()
+                .flat_map(|&p| {
+                    let c = pre(p);
+                    [c[0], c[1], c[2], p[3]]
+                })
+                .collect();
+            image.write_data(&data).unwrap();
+        }
+        cursor.into_inner()
+    };
+    let d = decode(&write8(), Default::default()).unwrap();
+    let back = d.to_srgb8();
+    for (p, q) in straight.iter().zip(&back.data) {
+        assert_eq!(p[3], q[3], "alpha");
+        if p[3] >= 64 {
+            // (8-bit premultiplied colour keeps less precision where alpha is low)
+            assert!((0..3).all(|c| p[c].abs_diff(q[c]) <= 4), "{p:?} vs {q:?}");
+        }
+    }
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    {
+        let mut encoder = TiffEncoder::new(&mut cursor).unwrap();
+        let mut image = encoder.new_image::<colortype::RGBA16>(4, 1).unwrap();
+        image.encoder().write_tag(tiff::tags::Tag::ExtraSamples, &[1u16][..]).unwrap();
+        let data: Vec<u16> = straight
+            .iter()
+            .flat_map(|&p| {
+                let a = p[3] as u32 * 257;
+                let c = [0, 1, 2].map(|i| ((p[i] as u32 * 257 * a + 32767) / 65535) as u16);
+                [c[0], c[1], c[2], a as u16]
+            })
+            .collect();
+        image.write_data(&data).unwrap();
+    }
+    let back16 = decode(&cursor.into_inner(), Default::default()).unwrap().to_srgb8();
+    for (p, q) in straight.iter().zip(&back16.data).filter(|(p, _)| p[3] > 0) {
+        assert!(p.iter().zip(q).all(|(a, b)| a.abs_diff(*b) <= 1), "{p:?} vs {q:?}");
+    }
+}
