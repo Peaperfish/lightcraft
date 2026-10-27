@@ -1222,9 +1222,9 @@ fn library_with_transparent_png(tag: &str) -> (Session, lightcraft_catalog::Phot
     (s, id, dir)
 }
 
-/// Issue #2976: PNG, TIFF and WebP exports of a transparent source keep its alpha, at 8 and 16 bits,
-/// with the colour of the opaque part as it was (no white mixed in); TIFF stores it unassociated
-/// (`ExtraSamples` = 2, as #1670 writes it).
+/// Issue #2976: exports of a transparent source keep its alpha in PNG and TIFF at 8 and 16 bits, in
+/// WebP at 8 bits and in 32-bit float TIFF, with the colour of the opaque part as it was (no white
+/// mixed in); TIFF stores it unassociated (`ExtraSamples` = 2, as #1670 writes it).
 #[test]
 fn transparent_sources_keep_their_alpha_in_png_tiff_and_webp() {
     let (mut s, id, dir) = library_with_transparent_png("export-alpha");
