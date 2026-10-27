@@ -1251,12 +1251,47 @@ fn transparent_sources_keep_their_alpha_in_png_tiff_and_webp() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The alpha auxiliary image of an AVIF file (this build can't decode AVIF to look at its pixels).
+fn avif_has_alpha_image(bytes: &[u8]) -> bool {
+    let urn = b"urn:mpeg:mpegB:cicp:systems:auxiliary:alpha";
+    bytes.windows(urn.len()).any(|w| w == urn)
+}
+
+/// Issue #2976: AVIF and lossless JPEG XL exports of a transparent source keep its alpha too
+/// (straight), at both bit depths, JPEG XL with the colour of the opaque part as it was. AVIF can't
+/// be decoded here: its file carries an alpha image.
+#[test]
+fn transparent_sources_keep_their_alpha_in_avif_and_lossless_jxl() {
+    let (mut s, id, dir) = library_with_transparent_png("export-alpha-avif-jxl");
+    for depth in [8, 16] {
+        let o = ExportOptions::from_json(&json!({"format": "jxl", "bitDepth": depth, "jxlLossless": true}));
+        let e = export_photo(&mut s, id, &o, 1).unwrap();
+        let d = lightcraft_codecs::decode(&e.bytes, Default::default()).unwrap();
+        assert!(d.has_alpha, "{depth}-bit JPEG XL keeps alpha");
+        assert_eq!((d.width, d.height), (300, 200), "{depth}-bit JPEG XL");
+        let a = d.alpha.as_ref().unwrap();
+        for (x, y) in [(2, 2), (297, 197), (74, 100), (150, 49)] {
+            assert!(a.get(x, y) < 1e-3, "{depth}-bit JPEG XL: transparent at ({x}, {y})");
+        }
+        for (x, y) in [(75, 100), (150, 100), (224, 149)] {
+            assert!(a.get(x, y) > 0.999, "{depth}-bit JPEG XL: opaque at ({x}, {y})");
+        }
+        let edge = d.to_srgb8().get(75, 100);
+        assert!(edge[0].abs_diff(200) <= 2 && edge[1].abs_diff(40) <= 2 && edge[2].abs_diff(30) <= 2, "{depth}-bit JPEG XL edge {edge:?}");
+    }
+    for depth in [8, 10] {
+        let e = export_photo(&mut s, id, &ExportOptions::from_json(&json!({"format": "avif", "bitDepth": depth})), 1).unwrap();
+        assert!(avif_has_alpha_image(&e.bytes), "{depth}-bit AVIF keeps alpha");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// JPEG (and the other formats without alpha in this export) composites a transparent source onto
-/// white as before; an opaque PNG source still exports as RGB (#1670).
+/// white as before; an opaque PNG source still exports as RGB (#1670). Lossy JPEG XL does too:
+/// jixel 0.3.4's lossy alpha past one 256-pixel group doesn't decode in jxl-oxide.
 #[test]
 fn transparency_stays_on_white_where_it_is_not_kept() {
     let (mut s, id, dir) = library_with_transparent_png("export-alpha-white");
-    // (AVIF is left out: it composites onto white too, but this build can't decode one to check)
     for format in ["jpeg", "psd", "jxl"] {
         let e = export_photo(&mut s, id, &ExportOptions::from_json(&json!({"format": format})), 1).unwrap();
         let d = lightcraft_codecs::decode(&e.bytes, Default::default()).unwrap();
@@ -1317,15 +1352,31 @@ fn opaque_sources_export_exactly_as_before() {
     assert_eq!(ids.len(), 2);
     for id in ids {
         s.execute("develop.set", &json!({"ids": [id.0], "control": "geometry.vertical", "value": -60})).unwrap();
-        for (format, depth) in [("png", 8), ("png", 16), ("tiff", 8), ("webp", 8)] {
-            let o = ExportOptions::from_json(&json!({"format": format, "bitDepth": depth}));
+        let outputs = [
+            ("png", 8, false),
+            ("png", 16, false),
+            ("tiff", 8, false),
+            ("webp", 8, false),
+            ("jxl", 8, false),
+            ("jxl", 8, true),
+            ("jxl", 16, true),
+            ("avif", 8, false),
+            ("avif", 10, false),
+        ];
+        for (format, depth, lossless) in outputs {
+            let o = ExportOptions::from_json(&json!({"format": format, "bitDepth": depth, "jxlLossless": lossless}));
             let e = export_photo(&mut s, id, &o, 1).unwrap();
             // the same render without the transparency path, as before #2976
             let (w, h) = crate::export::output_size(s.catalog.photo(id).unwrap(), &o);
             let meta = crate::export::export_metadata(s.catalog.photo(id).unwrap(), &s.catalog, &o);
             let job = s.export_job(id, w, h, o.effective_space(), o.effective_depth()).unwrap();
             let before = crate::export::encode_rendered(&job.run().rendered.unwrap(), &o, meta.as_ref()).unwrap();
-            assert!(e.bytes == before, "{format} {depth}-bit: identical to the render without transparency");
+            assert!(e.bytes == before, "{format} {depth}-bit (lossless: {lossless}): identical to the render without transparency");
+            if format == "avif" {
+                // (no AVIF decoder in this build)
+                assert!(!avif_has_alpha_image(&e.bytes), "{depth}-bit AVIF: no alpha");
+                continue;
+            }
             let d = lightcraft_codecs::decode(&e.bytes, Default::default()).unwrap();
             assert!(!d.has_alpha, "{format} {depth}-bit: no alpha");
             if (format, depth) == ("png", 8) {
@@ -1358,8 +1409,9 @@ fn soft_edges_keep_their_colour_through_crop_straighten_and_exposure() {
     s.execute("crop.set", &json!({"rect": [0.1, 0.1, 0.9, 0.9]})).unwrap();
     s.execute("crop.set", &json!({"angle": 10.0})).unwrap();
     s.execute("develop.set", &json!({"ids": [id.0], "control": "light.exposure", "value": 0.7})).unwrap();
-    for format in ["png", "tiff", "webp"] {
-        let e = export_photo(&mut s, id, &ExportOptions::from_json(&json!({"format": format})), 1).unwrap();
+    for format in ["png", "tiff", "webp", "jxl"] {
+        // (lossless JPEG XL: the colour is compared as tightly as in PNG)
+        let e = export_photo(&mut s, id, &ExportOptions::from_json(&json!({"format": format, "jxlLossless": true})), 1).unwrap();
         let d = lightcraft_codecs::decode(&e.bytes, Default::default()).unwrap();
         assert!(d.has_alpha, "{format}");
         let px = d.to_srgb8();
@@ -1385,8 +1437,13 @@ fn soft_edges_keep_their_colour_through_crop_straighten_and_exposure() {
 fn hard_edges_stay_red_when_downscaled_or_straightened() {
     let (mut s, id, dir) = library_with_transparent_png("export-alpha-hard-edge");
     let straightened = |s: &mut Session| s.execute("crop.set", &json!({"angle": 5.0})).map(|_| ());
-    let cases: [(&str, serde_json::Value, bool); 2] =
-        [("longEdge 150", json!({"format": "png", "longEdge": 150}), false), ("5° straighten", json!({"format": "png"}), true)];
+    // (lossless JPEG XL: the same resampled alpha through the JPEG XL encoder)
+    let cases: [(&str, serde_json::Value, bool); 4] = [
+        ("longEdge 150", json!({"format": "png", "longEdge": 150}), false),
+        ("JPEG XL, longEdge 150", json!({"format": "jxl", "jxlLossless": true, "longEdge": 150}), false),
+        ("5° straighten", json!({"format": "png"}), true),
+        ("JPEG XL, 5° straighten", json!({"format": "jxl", "jxlLossless": true}), true),
+    ];
     for (name, options, straighten) in cases {
         if straighten {
             straightened(&mut s).unwrap();

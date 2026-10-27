@@ -495,8 +495,8 @@ fn snapshot_starts_without_a_gpu() {
     }
 }
 
-/// Issue #2976: a transparent PNG exported as PNG kept its pixels but lost its alpha (flattened
-/// onto white); JPEG still composites onto white.
+/// Issue #2976: a transparent PNG exported as PNG or lossless JPEG XL kept its pixels but lost its
+/// alpha (flattened onto white); JPEG still composites onto white.
 #[test]
 fn transparent_png_export_keeps_its_alpha() {
     let input = tmp("alpha-in.png");
@@ -509,10 +509,15 @@ fn transparent_png_export_keeps_its_alpha() {
         );
     let png = lightcraft_codecs::encode_png(&lightcraft_codecs::EncodeImage::rgba8(&img), &Default::default()).unwrap();
     std::fs::write(&input, png).unwrap();
-    let (png_out, jpg_out) = (tmp("alpha-out.png"), tmp("alpha-out.jpg"));
-    for out in [&png_out, &jpg_out] {
+    let (png_out, jpg_out, jxl_out) = (tmp("alpha-out.png"), tmp("alpha-out.jpg"), tmp("alpha-out.jxl"));
+    for out in [&png_out, &jpg_out, &jxl_out] {
         let _ = std::fs::remove_file(out);
-        let (ok, lines, err) = run_cli(&["--import", input.to_str().unwrap(), "app.export", &format!("path={}", out.display())], None);
+        let path = format!("path={}", out.display());
+        let mut args = vec!["--import", input.to_str().unwrap(), "app.export", &path];
+        if out == &jxl_out {
+            args.push("jxlLossless=true");
+        }
+        let (ok, lines, err) = run_cli(&args, None);
         assert!(ok && lines.iter().all(|l| l["ok"] == true), "{err} {lines:?}");
     }
 
@@ -531,6 +536,12 @@ fn transparent_png_export_keeps_its_alpha() {
     let edge = px.get(75, 100);
     assert_eq!(edge[3], 255);
     assert!(edge[1] < 60, "no white fringe: {edge:?}");
+
+    let x = lightcraft_codecs::decode(&std::fs::read(&jxl_out).unwrap(), Default::default()).unwrap();
+    assert!(x.has_alpha, "the lossless JPEG XL keeps an alpha channel");
+    let px = x.to_srgb8();
+    assert_eq!(px.get(2, 2)[3], 0, "JPEG XL: transparent corner");
+    assert_eq!(px.get(150, 100)[3], 255, "JPEG XL: opaque in the rectangle");
 
     let j = lightcraft_codecs::decode(&std::fs::read(&jpg_out).unwrap(), Default::default()).unwrap();
     assert!(!j.has_alpha);

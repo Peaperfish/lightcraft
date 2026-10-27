@@ -1704,9 +1704,10 @@ impl crate::Session {
         self.export_job_with_alpha(id, max_w, max_h, space, depth, false)
     }
 
-    /// [`Self::export_job`]; with `alpha`, for a file that keeps transparency (PNG, TIFF, WebP): the
-    /// render is of the source's colour without the white its transparent areas are flattened onto,
-    /// with [`Rendered::alpha`] (issue #2976). A source without transparency renders as without.
+    /// [`Self::export_job`]; with `alpha`, for a file that keeps transparency (PNG, TIFF, WebP, AVIF,
+    /// lossless JPEG XL): the render is of the source's colour without the white its transparent areas are
+    /// flattened onto, with [`Rendered::alpha`] (issue #2976). A source without transparency renders
+    /// as without.
     pub fn export_job_with_alpha(
         &mut self,
         id: PhotoId,

@@ -327,8 +327,9 @@ pub fn encode_webp_lossless(img: &EncodeImage, meta: &EncodeMeta) -> Result<Vec<
 
 /// Encode AVIF (sRGB, 4:4:4, 10-bit AV1) with `ravif` (rav1e). 8-bit samples are widened by the
 /// encoder; 16-bit samples keep 10 bits of precision (BT.601 full-range YCbCr computed here).
-/// `quality` 1..=100, `speed` 1 (slow) ..= 10. EXIF is embedded; ICC is not supported by the muxer
-/// (the file is tagged sRGB via `nclx`). Returns [`Error::Encode`] for float samples, on wasm32 or
+/// Straight alpha is written as an alpha image (at `quality`) when some pixel is not opaque, and
+/// left out otherwise. `quality` 1..=100, `speed` 1 (slow) ..= 10. EXIF is embedded; ICC is not
+/// supported by the muxer (the file is tagged sRGB via `nclx`). Returns [`Error::Encode`] for float samples, on wasm32 or
 /// when built without the `avif` feature.
 pub fn encode_avif(img: &EncodeImage, quality: u8, speed: u8, meta: &EncodeMeta) -> Result<Vec<u8>> {
     img.validate()?;

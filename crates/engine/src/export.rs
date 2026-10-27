@@ -68,10 +68,11 @@ impl ExportFormat {
         !matches!(self, Self::Original | Self::Dng)
     }
 
-    /// Formats whose exports keep a transparent source's alpha (straight, unassociated alpha, as
-    /// #1670 writes it); the others composite it onto white (issue #2976).
+    /// Formats whose exports can keep a transparent source's alpha (straight, unassociated alpha,
+    /// as #1670 writes it); the others composite it onto white (issue #2976). Whether an export
+    /// does is [`ExportOptions::keeps_alpha`].
     pub fn keeps_alpha(self) -> bool {
-        matches!(self, Self::Png | Self::Tiff | Self::Webp)
+        matches!(self, Self::Png | Self::Tiff | Self::Webp | Self::Avif | Self::Jxl)
     }
 }
 
@@ -1296,6 +1297,14 @@ impl ExportOptions {
             )
     }
 
+    /// Whether an export with these options keeps a transparent source's alpha (issue #2976): a
+    /// format that can ([`ExportFormat::keeps_alpha`]), except HDR files and lossy JPEG XL, which
+    /// composite it onto white. (jixel 0.3.4 writes lossy alpha that jxl-oxide, our decoder, can't
+    /// read once the image spans more than one 256-pixel group.)
+    pub fn keeps_alpha(&self) -> bool {
+        self.format.keeps_alpha() && !self.hdr_output() && (self.format != ExportFormat::Jxl || self.jxl_lossless)
+    }
+
     /// The colour space the file is actually written in (AVIF: sRGB; AVIF, PNG and JPEG XL HDR:
     /// Rec. 2020; lossy JPEG XL: Adobe RGB and ProPhoto as Rec. 2020, the widest space its encoder
     /// can declare without a profile).
@@ -1567,9 +1576,9 @@ pub fn srgb8_in(space: OutputSpace, c: [u8; 3]) -> [u8; 3] {
 /// 10-bit AVIF, 32-bit float linear TIFF), else its 8-bit image.
 ///
 /// A render with alpha ([`lightcraft_pipeline::Rendered::alpha`]) keeps it in the formats that
-/// can ([`ExportFormat::keeps_alpha`]) when it is not opaque everywhere (issue #2976).
+/// can ([`ExportOptions::keeps_alpha`]) when it is not opaque everywhere (issue #2976).
 pub fn encode_rendered(r: &lightcraft_pipeline::Rendered, o: &ExportOptions, meta: Option<&Metadata>) -> Result<Vec<u8>, String> {
-    let alpha = r.alpha.as_ref().filter(|_| o.format.keeps_alpha());
+    let alpha = r.alpha.as_ref().filter(|_| o.keeps_alpha());
     match &r.deep {
         Some(d) if o.effective_depth() != OutputDepth::U8 => encode_deep_with_alpha(d, alpha, o, meta),
         _ => match alpha {
@@ -1596,7 +1605,8 @@ pub fn encode_deep(img: &DeepImage, o: &ExportOptions, meta: Option<&Metadata>) 
     encode_deep_with_alpha(img, None, o, meta)
 }
 
-/// [`encode_deep`] keeping straight alpha `alpha` (the image's size) in PNG and TIFF when it is
+/// [`encode_deep`] keeping straight alpha `alpha` (the image's size) in the formats that keep it
+/// ([`ExportOptions::keeps_alpha`]: PNG, TIFF, 10-bit AVIF, 16-bit lossless JPEG XL) when it is
 /// not opaque everywhere.
 fn encode_deep_with_alpha(img: &DeepImage, alpha: Option<&Plane>, o: &ExportOptions, meta: Option<&Metadata>) -> Result<Vec<u8>, String> {
     let meta_src = meta;
@@ -1627,7 +1637,7 @@ fn encode_deep_with_alpha(img: &DeepImage, alpha: Option<&Plane>, o: &ExportOpti
             .collect()
     }
     let (rgba16, rgba32);
-    let e = match (&img.samples, alpha.as_ref().filter(|_| matches!(o.format, ExportFormat::Png | ExportFormat::Tiff))) {
+    let e = match (&img.samples, alpha.as_ref().filter(|_| o.keeps_alpha())) {
         (DeepSamples::U16(v), Some(a)) => {
             rgba16 = rgba(v, a, |av| (av * 65535.0).round() as u16);
             EncodeImage::new(w, h, 4, Samples::U16(&rgba16))
@@ -1837,8 +1847,7 @@ fn prepare_guarded(
         let label = p.file_name.clone();
         let meta = export_metadata(p, &session.catalog, o);
         let gain_map = o.hdr_output() && o.format == ExportFormat::Jpeg;
-        // (HDR files are written without alpha: their transparent areas stay on white)
-        let alpha = o.format.keeps_alpha() && !o.hdr_output();
+        let alpha = o.keeps_alpha();
         let alpha_file = can_carry_alpha(&p.format);
         let job = session.export_job_with_alpha(id, w, h, o.effective_space(), o.effective_depth(), alpha)?;
         let weight = render_weight(full_px, long, job.level, w.saturating_mul(h));
@@ -2574,6 +2583,23 @@ mod tests {
         let mut alpha = Plane::new(200, 100);
         draw_watermark_deep_over(&mut deep, Some(&mut alpha), &wm);
         assert!(alpha.data.iter().any(|&a| a > 0.99) && alpha.data.contains(&0.0));
+    }
+
+    /// Issue #2976: which exports keep a transparent source's alpha.
+    #[test]
+    fn exports_that_keep_alpha() {
+        let keeps = |format, jxl_lossless, hdr| ExportOptions { format, jxl_lossless, hdr, ..Default::default() }.keeps_alpha();
+        for f in [ExportFormat::Png, ExportFormat::Tiff, ExportFormat::Webp, ExportFormat::Avif] {
+            assert!(keeps(f, false, false), "{f:?}");
+        }
+        assert!(keeps(ExportFormat::Jxl, true, false), "lossless JPEG XL");
+        assert!(!keeps(ExportFormat::Jxl, false, false), "lossy JPEG XL composites onto white");
+        for f in [ExportFormat::Avif, ExportFormat::Png, ExportFormat::Jxl] {
+            assert!(!keeps(f, true, true), "HDR {f:?} composites onto white");
+        }
+        for f in [ExportFormat::Jpeg, ExportFormat::Psd] {
+            assert!(!keeps(f, true, false), "{f:?}");
+        }
     }
 
     #[test]
@@ -3987,6 +4013,13 @@ mod tests {
             (weight(&mut s, logo, ExportFormat::Png), weight(&mut s, logo, ExportFormat::Tiff), weight(&mut s, logo, ExportFormat::Jpeg));
         assert!(logo_png > logo_jpeg, "a PNG exported as PNG counts its alpha: {logo_png} vs {logo_jpeg}");
         assert_eq!(logo_png, logo_tiff);
+        // AVIF and lossless JPEG XL keep it too; lossy JPEG XL composites onto white
+        assert_eq!(weight(&mut s, logo, ExportFormat::Avif), logo_png);
+        let jxl = |s: &mut crate::Session, jxl_lossless| {
+            prepare_export(s, logo, &ExportOptions { format: ExportFormat::Jxl, jxl_lossless, ..Default::default() }, 1).unwrap().weight
+        };
+        assert_eq!(jxl(&mut s, true), logo_png, "lossless JPEG XL counts the alpha");
+        assert_eq!(jxl(&mut s, false), logo_jpeg, "lossy JPEG XL doesn't");
         let (photo_png, photo_jpeg) = (weight(&mut s, photo, ExportFormat::Png), weight(&mut s, photo, ExportFormat::Jpeg));
         assert_eq!(photo_png, photo_jpeg, "a JPEG source weighs the same in any format");
         assert!(can_carry_alpha("png") && can_carry_alpha("TIF") && !can_carry_alpha("JPG") && !can_carry_alpha("NEF"));

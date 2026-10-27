@@ -10,6 +10,13 @@
   still composite onto white, and the grid and loupe still show transparent areas on white. Transparent exports
   render on the CPU for now; other photos still use the GPU.
 
+### AVIF and lossless JPEG XL exports keep transparency too
+- A transparent PNG logo or cut-out exported as AVIF or lossless JPEG XL now keeps its transparency, as PNG, TIFF and
+  WebP exports do, instead of flattening it onto white (issue #2976). Both store it as straight alpha: AVIF at 8 and
+  10 bits, JPEG XL at 8 and 16 bits. Lossy JPEG XL still composites onto white for now (its encoder's lossy
+  transparency doesn't read back in LightCraft), as do JPEG, PSD and HDR exports. Photos without transparency export
+  exactly as before.
+
 ## 2026-10-24
 
 ### Relative-date filters and smart albums follow the clock

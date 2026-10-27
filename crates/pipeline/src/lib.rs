@@ -156,9 +156,10 @@ pub struct RenderRequest {
     /// Previews for a monitor with a display profile: render 8-bit into its primaries instead of
     /// `space` (see [`DisplaySpace`]; ignored by deep renders).
     pub display: Option<DisplaySpace>,
-    /// The output keeps the source's transparency (exports to PNG, TIFF and WebP of a source with
-    /// [`SourceInfo::alpha`]): the colour is developed without the white it is flattened onto, and
-    /// [`Rendered::alpha`] carries the alpha through the same geometry (issue #2976).
+    /// The output keeps the source's transparency (exports to PNG, TIFF, WebP, AVIF and lossless
+    /// JPEG XL of a source with [`SourceInfo::alpha`]): the colour is developed without the white
+    /// it is flattened onto, and [`Rendered::alpha`] carries the alpha through the same geometry
+    /// (issue #2976).
     pub alpha: bool,
 }
 
