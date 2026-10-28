@@ -1456,11 +1456,14 @@ fn hard_edges_stay_red_when_the_decoder_downscales() {
 /// as 0.99999994: that must not send an opaque photo down the transparent export path).
 #[test]
 fn a_fitted_decode_keeps_alpha_only_for_real_transparency() {
-    let png = |img: &lightcraft_raster::Rgba8| lightcraft_codecs::encode_png(&lightcraft_codecs::EncodeImage::rgba8(img), &Default::default()).unwrap();
+    let png =
+        |img: &lightcraft_raster::Rgba8| lightcraft_codecs::encode_png(&lightcraft_codecs::EncodeImage::rgba8(img), &Default::default()).unwrap();
     let opaque = lightcraft_raster::Rgba8::from_fn(600, 400, |x, y| [(x % 256) as u8, (y % 256) as u8, 90, 255]);
     let (_, info) = crate::files::load_bytes(&png(&opaque), 300).unwrap();
     assert!(info.alpha.is_none(), "an opaque RGBA file has no transparency");
-    let clear = lightcraft_raster::Rgba8::from_fn(600, 400, |x, y| if (150..450).contains(&x) && (100..300).contains(&y) { [200, 40, 30, 255] } else { [0, 0, 0, 0] });
+    let clear = lightcraft_raster::Rgba8::from_fn(600, 400, |x, y| {
+        if (150..450).contains(&x) && (100..300).contains(&y) { [200, 40, 30, 255] } else { [0, 0, 0, 0] }
+    });
     let (img, info) = crate::files::load_bytes(&png(&clear), 300).unwrap();
     let a = info.alpha.expect("a transparent file keeps its alpha");
     assert_eq!((a.width, a.height), (img.width, img.height));

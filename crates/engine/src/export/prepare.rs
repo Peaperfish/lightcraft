@@ -207,9 +207,9 @@ fn alpha_weight(full_px: usize, long: usize, level: crate::media::SourceLevel, o
 }
 
 /// Whether a photo of catalog format `format` (its upper-case extension, `Photo::format`) is a
-/// kind of file whose decoder can give it transparency.
+/// kind of file whose decoder can give it transparency ([`lightcraft_codecs::Format::can_carry_alpha`]).
 pub(super) fn can_carry_alpha(format: &str) -> bool {
-    matches!(format.to_ascii_uppercase().as_str(), "PNG" | "TIF" | "TIFF" | "WEBP" | "GIF" | "BMP" | "JXL" | "HEIC" | "HEIF" | "HIF")
+    lightcraft_codecs::Format::from_extension(format).is_some_and(lightcraft_codecs::Format::can_carry_alpha)
 }
 
 pub(super) fn render_weight(full_px: usize, long: usize, level: crate::media::SourceLevel, out_px: usize) -> usize {

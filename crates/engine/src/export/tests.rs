@@ -1501,6 +1501,8 @@ fn alpha_planes_are_counted_only_where_transparency_can_be_kept() {
     let (photo_png, photo_jpeg) = (weight(&mut s, photo, ExportFormat::Png), weight(&mut s, photo, ExportFormat::Jpeg));
     assert_eq!(photo_png, photo_jpeg, "a JPEG source weighs the same in any format");
     assert!(can_carry_alpha("png") && can_carry_alpha("TIF") && !can_carry_alpha("JPG") && !can_carry_alpha("NEF"));
+    // Photoshop files keep their merged transparency when decoded
+    assert!(can_carry_alpha("PSD") && can_carry_alpha("psb"), "PSD and PSB can carry transparency");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
