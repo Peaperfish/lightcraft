@@ -1423,3 +1423,46 @@ fn a_transparency_that_does_not_fit_fails_the_export() {
     assert!(job.run().rendered.is_ok());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Review of #2976: a source the decoder fits down (a 600 × 400 transparent PNG exported at
+/// `longEdge 300`, decoded at a smaller level) keeps its colour at a hard edge: the colour under
+/// the transparent pixels (`[0, 0, 0, 0]`: black) must not bleed into the edge.
+#[test]
+fn hard_edges_stay_red_when_the_decoder_downscales() {
+    let dir = temp_dir("export-alpha-decode-fit");
+    let src = dir.join("big.png");
+    let img = lightcraft_raster::Rgba8::from_fn(600, 400, |x, y| {
+        if (150..450).contains(&x) && (100..300).contains(&y) { [200, 40, 30, 255] } else { [0, 0, 0, 0] }
+    });
+    std::fs::write(&src, lightcraft_codecs::encode_png(&lightcraft_codecs::EncodeImage::rgba8(&img), &Default::default()).unwrap()).unwrap();
+    let mut s = Session::new().with_fs();
+    s.execute("library.import", &json!({"paths": [src.to_string_lossy()]})).unwrap();
+    let id = s.catalog.photos().next().unwrap().id;
+    let e = export_photo(&mut s, id, &ExportOptions::from_json(&json!({"format": "png", "longEdge": 300})), 1).unwrap();
+    let d = lightcraft_codecs::decode(&e.bytes, Default::default()).unwrap();
+    assert!(d.has_alpha);
+    assert_eq!((d.width, d.height), (300, 200));
+    let px = d.to_srgb8();
+    let partial: Vec<[u8; 4]> = px.data.iter().copied().filter(|p| p[3] > 0 && p[3] < 255).collect();
+    assert!(!partial.is_empty(), "the edge is resampled");
+    for p in &partial {
+        assert!(p[0].abs_diff(200) <= 4 && p[1].abs_diff(40) <= 4 && p[2].abs_diff(30) <= 4, "edge pixel {p:?} is not red (200, 40, 30)");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Review of #2976: a decode the decoder fits down keeps a straight 0..1 alpha plane for a
+/// transparent file, and none for an RGBA file that is opaque everywhere (the fit brings 1.0 back
+/// as 0.99999994: that must not send an opaque photo down the transparent export path).
+#[test]
+fn a_fitted_decode_keeps_alpha_only_for_real_transparency() {
+    let png = |img: &lightcraft_raster::Rgba8| lightcraft_codecs::encode_png(&lightcraft_codecs::EncodeImage::rgba8(img), &Default::default()).unwrap();
+    let opaque = lightcraft_raster::Rgba8::from_fn(600, 400, |x, y| [(x % 256) as u8, (y % 256) as u8, 90, 255]);
+    let (_, info) = crate::files::load_bytes(&png(&opaque), 300).unwrap();
+    assert!(info.alpha.is_none(), "an opaque RGBA file has no transparency");
+    let clear = lightcraft_raster::Rgba8::from_fn(600, 400, |x, y| if (150..450).contains(&x) && (100..300).contains(&y) { [200, 40, 30, 255] } else { [0, 0, 0, 0] });
+    let (img, info) = crate::files::load_bytes(&png(&clear), 300).unwrap();
+    let a = info.alpha.expect("a transparent file keeps its alpha");
+    assert_eq!((a.width, a.height), (img.width, img.height));
+    assert!(a.data.iter().all(|&v| (0.0..=1.0).contains(&v)), "straight alpha stays in 0..1");
+}
