@@ -430,11 +430,12 @@ fn sample_warped(base: &Rgb32f, sx: f64, sy: f64, wp: &Warp, o2t: Affine, w: usi
 
 /// Undo the flatten onto white (`f = c·a + (1 − a)` in linear light) of a value resampled with
 /// its alpha `a` (both with the same weights, so the result is the alpha-weighted colour). Pixels
-/// with almost no alpha keep the white: their colour is not recoverable.
+/// with almost no alpha keep the white: their colour is not recoverable. The colour is clamped at
+/// 0: a prefilter's negative lobe next to an edge, divided by a small alpha, would undershoot.
 #[inline]
 fn unflatten(f: f32, a: f32) -> f32 {
     const VISIBLE: f32 = 1.0 / 1024.0;
-    if a.is_finite() && a >= VISIBLE { (f - (1.0 - a)) / a } else { f }
+    if a.is_finite() && a >= VISIBLE { ((f - (1.0 - a)) / a).max(0.0) } else { f }
 }
 
 /// Bilinear alpha at pixel coordinates `(x, y)` of `a`; 0 off the image, which (as for a warp,

@@ -158,8 +158,9 @@ pub(crate) fn finish(format: Format, raw: Raw, meta: Meta, source_dims: (u32, u3
                     let mut a = fit(&a, mw as usize, mh as usize, f);
                     for (p, av) in img.data.iter_mut().zip(a.data.iter_mut()) {
                         // (no colour to recover where there's next to no alpha: it stays the weighted value, ~0)
+                        // (clamped at 0: a negative lobe next to an edge, divided by a small alpha, undershoots)
                         if av.is_finite() && *av >= 1.0 / 1024.0 {
-                            *p = p.map(|c| c / *av);
+                            *p = p.map(|c| (c / *av).max(0.0));
                         }
                         // the filter rings a little past 0 and 1: the plane is straight alpha 0..1, as
                         // `to_working` flattens with it and an export carries it

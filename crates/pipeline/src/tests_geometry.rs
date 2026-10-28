@@ -593,3 +593,33 @@ fn alpha_follows_the_pixels_through_every_frame() {
     assert!(img.data.iter().zip(&plain.data).all(|(p, q)| p.iter().zip(q).all(|(a, b)| (a - b).abs() < 1e-5)));
     assert!(a.data.iter().all(|&v| (v - 1.0).abs() < 1e-5));
 }
+
+/// Review of #2976: the colour that comes back from the unflatten is never negative, even where a
+/// downscale's prefilter (Mitchell, with negative lobes) meets a low-alpha pixel next to an edge
+/// between two colours: dividing by a small alpha would blow the lobe's undershoot up.
+#[test]
+fn unflattened_colour_is_never_negative() {
+    use crate::geometry::Frame;
+    use lightcraft_raster::Plane;
+    let (w, h) = (240, 160);
+    // a red | green edge, with an alpha that falls off to almost nothing across it
+    let colour = |x: usize| if x < 120 { [0.9f32, 0.0, 0.0] } else { [0.0, 0.9, 0.0] };
+    let alpha = Plane::from_fn(w, h, |x, _| {
+        if x < 118 {
+            1.0
+        } else if x < 122 {
+            0.02
+        } else {
+            1.0
+        }
+    });
+    let flat = Rgb32f::from_fn(w, h, |x, y| {
+        let a = alpha.get(x, y);
+        colour(x).map(|c| c * a + (1.0 - a))
+    });
+    let f = Frame::new(w, h, &DevelopSettings::default(), true);
+    // 4:1, so the Mitchell prefilter runs
+    let (img, a) = f.sample_with_alpha(&flat, &alpha, 60, 40);
+    let worst = img.data.iter().zip(&a.data).filter(|(_, av)| **av > 0.0).flat_map(|(p, _)| p.iter().copied()).fold(f32::INFINITY, f32::min);
+    assert!(worst >= 0.0, "a colour channel came back negative: {worst}");
+}
