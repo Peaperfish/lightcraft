@@ -623,3 +623,44 @@ fn unflattened_colour_is_never_negative() {
     let worst = img.data.iter().zip(&a.data).filter(|(_, av)| **av > 0.0).flat_map(|(p, _)| p.iter().copied()).fold(f32::INFINITY, f32::min);
     assert!(worst >= 0.0, "a colour channel came back negative: {worst}");
 }
+
+/// Review of #2976: `sample_with_alpha` through a lens warp with chromatic-aberration correction
+/// (red and blue sampled at their own positions, each unflattened with the alpha there) and a
+/// vignette correction (the gain applied to the unflattened colour): a hard-edged source of one
+/// colour comes back as that colour times the gain, as the plain resample of the opaque colour
+/// gives it, wherever its alpha shows; no white from the transparent area gets into any channel.
+#[test]
+fn alpha_sampling_handles_chromatic_aberration_and_vignette() {
+    use crate::geometry::Frame;
+    use lightcraft_raster::Plane;
+    let (w, h) = (240, 160);
+    let colour = [0.6f32, 0.25, 0.1];
+    let alpha = Plane::from_fn(w, h, |x, y| if (50..190).contains(&x) && (30..130).contains(&y) { 1.0 } else { 0.0 });
+    let flat = Rgb32f::from_fn(w, h, |x, y| {
+        let a = alpha.get(x, y);
+        colour.map(|c| c * a + (1.0 - a))
+    });
+    let opaque = Rgb32f::from_fn(w, h, |_, _| colour);
+    let mut s = DevelopSettings::default();
+    s.optics.ca_red = 80.0;
+    s.optics.ca_blue = -80.0;
+    s.optics.vignetting = 60.0;
+    let f = Frame::new(w, h, &s, true);
+    let warp = f.warp.as_ref().expect("the lens corrections make a warp");
+    assert!(warp.per_channel() && warp.has_gain(), "both branches are on");
+    // a slight downscale (with the prefilter), so the edges fall between pixels
+    let (ow, oh) = (190, 127);
+    let (img, a) = f.sample_with_alpha(&flat, &alpha, ow, oh);
+    let reference = f.sample(&opaque, ow, oh);
+    let (mut checked, mut partial) = (0, 0);
+    for (i, ((p, q), &av)) in img.data.iter().zip(&reference.data).zip(&a.data).enumerate() {
+        if av > 0.05 {
+            assert!(p.iter().zip(q).all(|(c, r)| (c - r).abs() <= 2e-3 * r.max(1.0)), "pixel {i} (alpha {av}): {p:?}, want {q:?}");
+            checked += 1;
+            partial += usize::from(av < 0.95);
+        }
+    }
+    assert!(checked > 8_000 && partial > 100, "{checked} pixels checked, {partial} on the edge");
+    // the gain is really there: the corners of the opaque area are brighter than its middle
+    assert!(reference.get(42, 26)[0] > reference.get(95, 63)[0]);
+}

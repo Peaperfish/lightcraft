@@ -193,10 +193,6 @@ pub(super) fn too_big_for_memory(out: (usize, usize), native_px: usize, weight: 
     ))
 }
 
-/// Working memory of rendering a photo of `full_px` pixels (long edge `long`) from source level
-/// `level` into `out_px` output pixels: the decoded source (linear RGB f32, 12 B/px) plus the
-/// pipeline's planes and the encoded output (~36 B per output pixel). Measured: a 24 MP export
-/// peaks at ~1.2 GB, one at 2048 px from the 2560 px preview at ~150 MB.
 /// What keeping a transparent source's alpha adds to [`render_weight`] (issue #2976): the source's
 /// alpha plane and its oriented or prefiltered copy (8 bytes a source pixel), and at the output the
 /// colour and alpha resampled side by side, the alpha plane and the RGBA image encoded (24 bytes
@@ -212,6 +208,10 @@ pub(super) fn can_carry_alpha(format: &str) -> bool {
     lightcraft_codecs::Format::from_extension(format).is_some_and(lightcraft_codecs::Format::can_carry_alpha)
 }
 
+/// Working memory of rendering a photo of `full_px` pixels (long edge `long`) from source level
+/// `level` into `out_px` output pixels: the decoded source (linear RGB f32, 12 B/px) plus the
+/// pipeline's planes and the encoded output (~36 B per output pixel). Measured: a 24 MP export
+/// peaks at ~1.2 GB, one at 2048 px from the 2560 px preview at ~150 MB.
 pub(super) fn render_weight(full_px: usize, long: usize, level: crate::media::SourceLevel, out_px: usize) -> usize {
     let edge = level.max_edge().min(long.max(1));
     let scale = edge as f64 / long.max(1) as f64;
