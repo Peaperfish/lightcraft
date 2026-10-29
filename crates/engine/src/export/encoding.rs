@@ -1,6 +1,9 @@
 use super::options::{ExportFormat, MetadataPolicy, SharpenAmount, SharpenFor};
 use super::watermark::{Watermark, draw_watermark, draw_watermark_deep_over};
-use super::*;
+use super::{
+    ChromaSubsampling, DateTime, DeepImage, DeepSamples, EncodeImage, EncodeMeta, ExportOptions, Gps, Metadata, NamedSpace, OutputDepth, OutputSpace,
+    Plane, Rgba8, Samples, encode, icc,
+};
 use std::borrow::Cow;
 
 /// Unsharp mask on an 8-bit image (separable box-blur approximation of a small Gaussian).
