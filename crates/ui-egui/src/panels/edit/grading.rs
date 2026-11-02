@@ -1,7 +1,7 @@
 use super::sliders::control;
 use super::{
     Align2, Color32, DevelopSettings, Icon, LightcraftApp, Mesh, PhotoId, Pos2, Rect, Sense, Stroke, Tokens, Vertex, json, paint, pos2, register,
-    vec2,
+    text_button, vec2,
 };
 
 // ------------------------------------------------------------------------------ colour grading
@@ -29,6 +29,12 @@ pub(super) fn grading(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSet
                     app.ui.grading_mode = key.to_string();
                 }
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let tip = crate::i18n::tr_format!("Reset {name}", name = crate::i18n::tr("Color Grading"));
+                if text_button(ui, "gradingReset", crate::i18n::tr("Reset"), false).on_hover_text(tip).clicked() {
+                    let _ = app.run("develop.resetSection", json!({"section": "grading"}));
+                }
+            });
         });
     });
     let w = ui.available_width();

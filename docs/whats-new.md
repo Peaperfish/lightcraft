@@ -1,5 +1,12 @@
 # What's new in LightCraft
 
+## 2026-11-02
+
+### A Reset button for Color Grading
+- Color Grading in the Edit panel now has a Reset button at the right end of its tab row, like Curve. Clicking it resets
+  the Shadows, Midtones and Highlights wheels, their Luminance sliders, Blending and Balance to their defaults as one
+  undo step (issue #3492).
+
 ## 2026-10-30
 
 ### The Flatpak may talk to the accessibility bus

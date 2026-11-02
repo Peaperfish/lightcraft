@@ -497,3 +497,44 @@ fn a_wheel_that_goes_away_mid_drag_gives_the_pointer_back() {
     assert_ne!(h.last_cursor, egui::CursorIcon::None);
     assert_eq!(cursor_moves(&h), [press]);
 }
+
+#[test]
+fn reset_button_resets_grading_section_and_undo_restores_it() {
+    let mut h = demo();
+    let id = h.app.session.active().unwrap();
+    h.app
+        .session
+        .execute(
+            "develop.set",
+            &json!({
+                "values": {
+                    "grading.shadows.hue": 210.0,
+                    "grading.shadows.sat": 40.0,
+                    "grading.shadows.lum": -15.0,
+                    "grading.midtones.hue": 45.0,
+                    "grading.midtones.sat": 30.0,
+                    "grading.highlights.lum": 20.0,
+                    "grading.blending": 75.0,
+                    "grading.balance": -25.0,
+                    "color.vibrance": 25.0,
+                }
+            }),
+        )
+        .unwrap();
+    h.step();
+    let edited = h.app.session.catalog.photo(id).unwrap().develop.grading;
+    assert_ne!(edited, lightcraft_develop::ColorGrading::default());
+
+    let undo = h.app.session.undo.len();
+    click(&mut h, "button:gradingReset");
+
+    let d = &h.app.session.catalog.photo(id).unwrap().develop;
+    assert_eq!(d.grading, lightcraft_develop::ColorGrading::default());
+    assert_eq!(d.color.vibrance, 25.0);
+    assert_eq!(h.app.session.undo.len() - undo, 1);
+
+    let r = h.request("engine.execute", json!({"command": "edit.undo"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    assert_eq!(h.app.session.catalog.photo(id).unwrap().develop.grading, edited);
+}
